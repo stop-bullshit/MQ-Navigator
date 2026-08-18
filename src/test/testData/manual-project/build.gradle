@@ -1,0 +1,9 @@
+plugins { id 'java' }
+
+repositories { mavenCentral() }
+
+dependencies {
+    compileOnly 'org.springframework.amqp:spring-rabbit:3.1.7'
+    compileOnly 'org.springframework.kafka:spring-kafka:3.2.4'
+    compileOnly 'org.apache.rocketmq:rocketmq-spring-boot-starter:2.3.1'
+}

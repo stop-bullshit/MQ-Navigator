@@ -1,0 +1,36 @@
+<idea-plugin>
+    <id>cn.luckyh.mqx</id>
+    <name>MQ Navigator</name>
+    <vendor>luckyh</vendor>
+    <description><![CDATA[
+        Navigate between RabbitMQ, Kafka, and RocketMQ producers and consumers in the current project.
+    ]]></description>
+    <!-- 逻辑变动: 使用标准SVG插件Logo并复用到Tool Window-20260818-2003-01 -->
+    <icon>/icons/mq-navigator-plugin-logo.svg</icon>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 逻辑变动: 注册三类消息端点的双向导航入口-20260817-1826-01 -->
+        <codeInsight.lineMarkerProvider language="JAVA"
+                                        implementationClass="cn.luckyh.mqx.navigation.MqLineMarkerProvider"/>
+        <!-- 逻辑变动: 注册RabbitMQ项目级拓扑侧边栏并使用统一SVG Logo-20260818-2003-01 -->
+        <toolWindow id="MQ Navigator"
+                    factoryClass="cn.luckyh.mqx.ui.MqToolWindowFactory"
+                    anchor="right"
+                    icon="/icons/mq-navigator-plugin-logo.svg"/>
+        <notificationGroup id="MQ Navigator" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <!-- 逻辑变动: 在Tools菜单提供当前项目MQ端点重新扫描-20260817-1826-01 -->
+        <group id="MQ.Navigator.Tools" text="MQ Navigator" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="MQ.Navigator.Rescan"
+                    class="cn.luckyh.mqx.action.RefreshMqIndexAction"
+                    text="Rescan Endpoints"
+                    description="Refresh MQ producer and consumer navigation"/>
+        </group>
+    </actions>
+</idea-plugin>

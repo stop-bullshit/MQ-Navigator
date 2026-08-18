@@ -1,0 +1,14 @@
+mq:
+  kafka-topic: orders
+  ambiguous-topic: orders-one
+  same-topic: shared-config
+  rabbit-key: orders.created
+  rocket-destination: notice:SMS
+spring:
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+  kafka:
+    bootstrap-servers: 127.0.0.1:9092
+rocketmq:
+  name-server: 127.0.0.1:9876

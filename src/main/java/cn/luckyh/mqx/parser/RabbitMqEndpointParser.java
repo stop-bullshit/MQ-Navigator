@@ -1,0 +1,751 @@
+package cn.luckyh.mqx.parser;
+
+import com.intellij.psi.JavaPsiFacade;
+import com.intellij.psi.PsiAnnotation;
+import com.intellij.psi.PsiAnnotationMemberValue;
+import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiConditionalExpression;
+import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiExpression;
+import com.intellij.psi.PsiIdentifier;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiMethodCallExpression;
+import com.intellij.psi.PsiModifierListOwner;
+import com.intellij.psi.PsiNewExpression;
+import com.intellij.psi.PsiParameter;
+import com.intellij.psi.PsiReferenceExpression;
+import com.intellij.psi.PsiReturnStatement;
+import com.intellij.psi.PsiVariable;
+import com.intellij.psi.search.GlobalSearchScope;
+import com.intellij.psi.search.searches.AnnotatedElementsSearch;
+import com.intellij.psi.search.searches.MethodReferencesSearch;
+import com.intellij.psi.util.InheritanceUtil;
+import com.intellij.psi.util.PsiTreeUtil;
+import cn.luckyh.mqx.model.MqDestination;
+import cn.luckyh.mqx.model.MqEndpoint;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+public final class RabbitMqEndpointParser implements MqEndpointParser {
+
+    private static final List<String> TEMPLATE_TYPES = List.of(
+            "org.springframework.amqp.rabbit.core.RabbitTemplate",
+            "org.springframework.amqp.core.AmqpTemplate");
+    private static final String QUEUE_BUILDER = "org.springframework.amqp.core.QueueBuilder";
+    private static final String EXCHANGE_BUILDER = "org.springframework.amqp.core.ExchangeBuilder";
+    private static final String BINDING_BUILDER = "org.springframework.amqp.core.BindingBuilder";
+    private static final String LISTENER = "org.springframework.amqp.rabbit.annotation.RabbitListener";
+
+    private final MqValueResolver valueResolver;
+
+    public RabbitMqEndpointParser(MqValueResolver valueResolver) {
+        this.valueResolver = valueResolver;
+    }
+
+    @Override
+    public @NotNull List<MqEndpoint> collectEndpoints(
+            @NotNull com.intellij.openapi.project.Project project,
+            @NotNull GlobalSearchScope projectScope,
+            @NotNull Set<Object> cacheDependencies) {
+        List<MqEndpoint> endpoints = new ArrayList<>();
+        PsiClass annotationClass = JavaPsiFacade.getInstance(project)
+                .findClass(LISTENER, GlobalSearchScope.allScope(project));
+        if (annotationClass != null) {
+            for (PsiMethod method : AnnotatedElementsSearch.searchPsiMethods(annotationClass, projectScope).findAll()) {
+                endpoints.addAll(parseConsumer(method.getNameIdentifier(), cacheDependencies));
+            }
+            for (PsiClass psiClass : AnnotatedElementsSearch.searchPsiClasses(annotationClass, projectScope).findAll()) {
+                endpoints.addAll(parseConsumer(psiClass.getNameIdentifier(), cacheDependencies));
+            }
+        }
+
+        PsiClass queueBuilderClass = JavaPsiFacade.getInstance(project)
+                .findClass(QUEUE_BUILDER, GlobalSearchScope.allScope(project));
+        if (queueBuilderClass != null) {
+            for (PsiMethod method : queueBuilderClass.findMethodsByName("durable", true)) {
+                MethodReferencesSearch.search(method, projectScope, true).forEach(reference -> {
+                    if (reference.getElement() instanceof PsiReferenceExpression expression) {
+                        parseQueueDeclaration(expression.getReferenceNameElement(), cacheDependencies)
+                                .ifPresent(endpoints::add);
+                    }
+                    return true;
+                });
+            }
+        }
+        // 逻辑变动: 将Exchange和Binding源码端点加入RabbitMQ项目拓扑快照-20260818-1700-01
+        collectExchangeDeclarations(project, projectScope, cacheDependencies, endpoints);
+
+        // 逻辑变动: 维护RabbitMQ队列到绑定交换机的一对多拓扑关系-20260818-01
+        List<BindingRelation> bindings = collectBindings(project, projectScope, cacheDependencies);
+        for (BindingRelation binding : bindings) {
+            endpoints.add(bindingEndpoint(binding));
+        }
+
+        Set<PsiMethod> searchedMethods = new LinkedHashSet<>();
+        Set<PsiMethod> producerWrappers = new LinkedHashSet<>();
+        for (String templateType : TEMPLATE_TYPES) {
+            PsiClass templateClass = JavaPsiFacade.getInstance(project)
+                    .findClass(templateType, GlobalSearchScope.allScope(project));
+            if (templateClass == null) {
+                continue;
+            }
+            for (String methodName : List.of("send", "convertAndSend")) {
+                for (PsiMethod method : templateClass.findMethodsByName(methodName, true)) {
+                    if (!searchedMethods.add(method)) {
+                        continue;
+                    }
+                    MethodReferencesSearch.search(method, projectScope, true).forEach(reference -> {
+                        PsiElement element = reference.getElement();
+                        if (element instanceof PsiReferenceExpression expression) {
+                            PsiMethod wrapper = PsiTreeUtil.getParentOfType(element, PsiMethod.class);
+                            if (isProducerWrapper(wrapper)) {
+                                producerWrappers.add(wrapper);
+                            } else {
+                                endpoints.addAll(parseProducerEndpoints(
+                                        expression.getReferenceNameElement(), cacheDependencies));
+                            }
+                        }
+                        return true;
+                    });
+                }
+            }
+        }
+        // 逻辑变动: 从实际委托到Spring AMQP发送方法的实现识别通用发送封装-20260818-1350-01
+        for (PsiMethod wrapper : producerWrappers) {
+            if (!searchedMethods.add(wrapper)) {
+                continue;
+            }
+            MethodReferencesSearch.search(wrapper, projectScope, true).forEach(reference -> {
+                if (reference.getElement() instanceof PsiReferenceExpression expression) {
+                    endpoints.addAll(parseProducerEndpoints(
+                            expression.getReferenceNameElement(), cacheDependencies));
+                }
+                return true;
+            });
+        }
+        return applyBindings(endpoints, bindings);
+    }
+
+    @Override
+    public @NotNull Optional<MqEndpoint> parseAnchor(
+            @NotNull PsiElement anchor,
+            @NotNull Set<Object> cacheDependencies) {
+        // Binding 和 Exchange 声明仅用于项目拓扑树，原有 gutter 双向跳转保持不变。
+        PsiMethodCallExpression topologyCall = methodCall(anchor);
+        if (topologyCall != null && ("bind".equals(topologyCall.getMethodExpression().getReferenceName())
+                || isExchangeBuilderMethod(topologyCall.getMethodExpression().getReferenceName()))) {
+            return Optional.empty();
+        }
+        List<MqEndpoint> producers = parseProducerEndpoints(anchor, cacheDependencies);
+        if (!producers.isEmpty()) {
+            return Optional.of(producers.get(0));
+        }
+        Optional<MqEndpoint> declaration = parseQueueDeclaration(anchor, cacheDependencies);
+        if (declaration.isPresent()) {
+            return declaration;
+        }
+        List<MqEndpoint> consumers = parseConsumer(anchor, cacheDependencies);
+        return consumers.stream().findFirst();
+    }
+
+    private Optional<MqEndpoint> parseQueueDeclaration(PsiElement anchor, Set<Object> dependencies) {
+        PsiMethodCallExpression call = methodCall(anchor);
+        if (call == null || call.getArgumentList().getExpressionCount() == 0) {
+            return Optional.empty();
+        }
+        PsiMethod method = call.resolveMethod();
+        if (method == null || !"durable".equals(method.getName())
+                || method.getContainingClass() == null
+                || !QUEUE_BUILDER.equals(method.getContainingClass().getQualifiedName())
+                || method.getParameterList().getParametersCount() == 0
+                || !MqEndpointParser.isStringType(method.getParameterList().getParameters()[0].getType())) {
+            return Optional.empty();
+        }
+
+        // 逻辑变动: 识别RabbitAdmin项目中QueueBuilder静态队列声明-20260817-2014-01
+        MqValueResolver.ResolvedValue queue = valueResolver.resolveExpression(
+                call.getArgumentList().getExpressions()[0], dependencies);
+        String queueName = queue.value() == null ? "" : queue.value();
+        return Optional.of(MqEndpointParser.endpoint(anchor, MqEndpoint.SystemType.RABBITMQ,
+                MqEndpoint.Role.DECLARATION,
+                MqDestination.rabbitConsumer("", queueName, List.of(queueName), "direct"),
+                queue.state(), queue.message()));
+    }
+
+    private List<MqEndpoint> parseProducerEndpoints(PsiElement anchor, Set<Object> dependencies) {
+        PsiMethodCallExpression call = methodCall(anchor);
+        if (call == null) {
+            return List.of();
+        }
+        PsiMethod method = call.resolveMethod();
+        if (method == null) {
+            return List.of();
+        }
+        if (isTemplateSendMethod(method)) {
+            return parseTemplateProducerEndpoints(anchor, call, method, dependencies);
+        }
+        if (!isProducerWrapper(method)) {
+            return List.of();
+        }
+
+        return parseWrapperProducerEndpoints(anchor, call, method, dependencies);
+    }
+
+    private void collectExchangeDeclarations(
+            com.intellij.openapi.project.Project project,
+            GlobalSearchScope projectScope,
+            Set<Object> dependencies,
+            List<MqEndpoint> endpoints) {
+        PsiClass exchangeBuilderClass = JavaPsiFacade.getInstance(project)
+                .findClass(EXCHANGE_BUILDER, GlobalSearchScope.allScope(project));
+        if (exchangeBuilderClass == null) {
+            return;
+        }
+        for (String methodName : List.of(
+                "directExchange", "topicExchange", "fanoutExchange", "headersExchange")) {
+            for (PsiMethod method : exchangeBuilderClass.findMethodsByName(methodName, true)) {
+                MethodReferencesSearch.search(method, projectScope, true).forEach(reference -> {
+                    PsiMethodCallExpression call = methodCall(reference.getElement());
+                    if (call == null || call.getArgumentList().getExpressionCount() == 0) {
+                        return true;
+                    }
+                    PsiElement anchor = call.getMethodExpression().getReferenceNameElement();
+                    if (anchor == null) {
+                        return true;
+                    }
+                    MqValueResolver.ResolvedValue exchange = valueResolver.resolveExpression(
+                            call.getArgumentList().getExpressions()[0], dependencies);
+                    String exchangeName = exchange.value() == null ? "" : exchange.value();
+                    String exchangeType = methodName.substring(0, methodName.length() - "Exchange".length());
+                    endpoints.add(MqEndpointParser.endpoint(anchor, MqEndpoint.SystemType.RABBITMQ,
+                            MqEndpoint.Role.EXCHANGE_DECLARATION,
+                            MqDestination.rabbitConsumer(exchangeName, "", List.of(), exchangeType),
+                            exchange.state(), exchange.message()));
+                    return true;
+                });
+            }
+        }
+    }
+
+    private List<MqEndpoint> parseTemplateProducerEndpoints(
+            PsiElement anchor,
+            PsiMethodCallExpression call,
+            PsiMethod method,
+            Set<Object> dependencies) {
+        int leadingStrings = leadingStringParameters(method);
+        if (call.getArgumentList().getExpressionCount() == 0) {
+            return List.of(dynamicProducer(anchor, "RabbitMQ producer destination uses template defaults"));
+        }
+        var arguments = call.getArgumentList().getExpressions();
+        List<MqValueResolver.ResolvedValue> exchanges;
+        List<MqValueResolver.ResolvedValue> routingKeys;
+        if (leadingStrings >= 2 && arguments.length > 1) {
+            exchanges = valueResolver.resolveExpressionAlternatives(arguments[0], dependencies);
+            routingKeys = valueResolver.resolveExpressionAlternatives(arguments[1], dependencies);
+        } else {
+            exchanges = List.of(MqValueResolver.ResolvedValue.staticValue(""));
+            routingKeys = valueResolver.resolveExpressionAlternatives(arguments[0], dependencies);
+        }
+        return producerEndpoints(anchor, exchanges, routingKeys);
+    }
+
+    private List<MqEndpoint> parseWrapperProducerEndpoints(
+            PsiElement anchor,
+            PsiMethodCallExpression wrapperCall,
+            PsiMethod wrapper,
+            Set<Object> dependencies) {
+        List<MqEndpoint> endpoints = new ArrayList<>();
+        for (PsiMethodCallExpression templateCall : templateCalls(wrapper)) {
+            PsiMethod templateMethod = templateCall.resolveMethod();
+            if (templateMethod == null) {
+                continue;
+            }
+            int leadingStrings = leadingStringParameters(templateMethod);
+            if (templateCall.getArgumentList().getExpressionCount() == 0) {
+                endpoints.add(dynamicProducer(anchor, "RabbitMQ producer destination uses template defaults"));
+                continue;
+            }
+            PsiExpression[] arguments = templateCall.getArgumentList().getExpressions();
+            List<MqValueResolver.ResolvedValue> exchanges;
+            List<MqValueResolver.ResolvedValue> routingKeys;
+            if (leadingStrings >= 2 && arguments.length > 1) {
+                exchanges = resolveWrapperExpressionAlternatives(
+                        arguments[0], wrapper, wrapperCall, dependencies, new LinkedHashSet<>());
+                routingKeys = resolveWrapperExpressionAlternatives(
+                        arguments[1], wrapper, wrapperCall, dependencies, new LinkedHashSet<>());
+            } else {
+                exchanges = List.of(MqValueResolver.ResolvedValue.staticValue(""));
+                routingKeys = resolveWrapperExpressionAlternatives(
+                        arguments[0], wrapper, wrapperCall, dependencies, new LinkedHashSet<>());
+            }
+            endpoints.addAll(producerEndpoints(anchor, exchanges, routingKeys));
+        }
+        return endpoints;
+    }
+
+    private List<MqEndpoint> producerEndpoints(
+            PsiElement anchor,
+            List<MqValueResolver.ResolvedValue> exchanges,
+            List<MqValueResolver.ResolvedValue> routingKeys) {
+        List<MqEndpoint> endpoints = new ArrayList<>();
+        for (MqValueResolver.ResolvedValue exchange : exchanges) {
+            for (MqValueResolver.ResolvedValue routingKey : routingKeys) {
+                MqEndpoint.ResolutionState state = combinedState(exchange, routingKey);
+                String message = state == MqEndpoint.ResolutionState.DYNAMIC
+                        ? firstMessage(exchange, routingKey) : null;
+                MqDestination destination = MqDestination.rabbitProducer(
+                        exchange.value() == null ? "" : exchange.value(),
+                        routingKey.value() == null ? "" : routingKey.value());
+                endpoints.add(MqEndpointParser.endpoint(anchor, MqEndpoint.SystemType.RABBITMQ,
+                        MqEndpoint.Role.PRODUCER, destination, state, message));
+            }
+        }
+        return endpoints;
+    }
+
+    private boolean isTemplateSendMethod(PsiMethod method) {
+        if (method == null || !List.of("send", "convertAndSend").contains(method.getName())) {
+            return false;
+        }
+        PsiClass owner = method.getContainingClass();
+        return owner != null && TEMPLATE_TYPES.stream().anyMatch(type -> isType(owner, type));
+    }
+
+    private boolean isProducerWrapper(PsiMethod method) {
+        if (method == null || method.getBody() == null) {
+            return false;
+        }
+        for (PsiMethodCallExpression templateCall : templateCalls(method)) {
+            PsiMethod templateMethod = templateCall.resolveMethod();
+            if (templateMethod == null) {
+                continue;
+            }
+            int leadingStrings = leadingStringParameters(templateMethod);
+            PsiExpression[] arguments = templateCall.getArgumentList().getExpressions();
+            if (arguments.length == 0) {
+                return true;
+            }
+            int destinationCount = leadingStrings >= 2 && arguments.length > 1 ? 2 : 1;
+            for (int i = 0; i < destinationCount; i++) {
+                if (isWrapperParameter(arguments[i], method)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private List<PsiMethodCallExpression> templateCalls(PsiMethod method) {
+        if (method == null || method.getBody() == null) {
+            return List.of();
+        }
+        return PsiTreeUtil.findChildrenOfType(method, PsiMethodCallExpression.class).stream()
+                .filter(call -> PsiTreeUtil.getParentOfType(call, PsiMethod.class) == method)
+                .filter(call -> isTemplateSendMethod(call.resolveMethod()))
+                .toList();
+    }
+
+    private boolean isWrapperParameter(PsiExpression expression, PsiMethod wrapper) {
+        return expression instanceof PsiReferenceExpression reference
+                && reference.resolve() instanceof PsiParameter parameter
+                && parameter.getDeclarationScope() == wrapper;
+    }
+
+    private List<MqValueResolver.ResolvedValue> resolveWrapperExpressionAlternatives(
+            PsiExpression expression,
+            PsiMethod wrapper,
+            PsiMethodCallExpression wrapperCall,
+            Set<Object> dependencies,
+            Set<PsiElement> visited) {
+        if (!visited.add(expression)) {
+            return List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper expression is recursive"));
+        }
+        if (expression instanceof PsiReferenceExpression reference
+                && reference.resolve() instanceof PsiParameter parameter
+                && parameter.getDeclarationScope() == wrapper) {
+            int index = wrapper.getParameterList().getParameterIndex(parameter);
+            PsiExpression[] arguments = wrapperCall.getArgumentList().getExpressions();
+            return index >= 0 && index < arguments.length
+                    ? valueResolver.resolveExpressionAlternatives(arguments[index], dependencies)
+                    : List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper argument is missing"));
+        }
+        if (expression instanceof PsiConditionalExpression conditional
+                && conditional.getThenExpression() != null
+                && conditional.getElseExpression() != null) {
+            List<MqValueResolver.ResolvedValue> result = new ArrayList<>();
+            for (PsiExpression branch : List.of(
+                    conditional.getThenExpression(), conditional.getElseExpression())) {
+                List<MqValueResolver.ResolvedValue> branchValues = resolveWrapperExpressionAlternatives(
+                        branch, wrapper, wrapperCall, dependencies, new LinkedHashSet<>(visited));
+                if (branchValues.stream().anyMatch(value -> !value.resolved())) {
+                    return branchValues;
+                }
+                result.addAll(branchValues);
+            }
+            return result.stream().distinct().toList();
+        }
+        if (expression instanceof PsiReferenceExpression reference
+                && reference.resolve() instanceof PsiVariable variable
+                && variable.getInitializer() != null) {
+            return resolveWrapperExpressionAlternatives(
+                    variable.getInitializer(), wrapper, wrapperCall, dependencies, visited);
+        }
+        return List.of(valueResolver.resolveExpression(expression, dependencies));
+    }
+
+    private List<BindingRelation> collectBindings(
+            com.intellij.openapi.project.Project project,
+            GlobalSearchScope projectScope,
+            Set<Object> dependencies) {
+        PsiClass bindingBuilderClass = JavaPsiFacade.getInstance(project)
+                .findClass(BINDING_BUILDER, GlobalSearchScope.allScope(project));
+        if (bindingBuilderClass == null) {
+            return List.of();
+        }
+
+        List<BindingRelation> bindings = new ArrayList<>();
+        for (PsiMethod bindMethod : bindingBuilderClass.findMethodsByName("bind", true)) {
+            MethodReferencesSearch.search(bindMethod, projectScope, true).forEach(reference -> {
+                PsiMethodCallExpression bindCall = methodCall(reference.getElement());
+                if (bindCall == null || bindCall.getArgumentList().getExpressionCount() == 0) {
+                    return true;
+                }
+                PsiMethodCallExpression toCall = chainedCall(bindCall, "to");
+                if (toCall == null || toCall.getArgumentList().getExpressionCount() == 0) {
+                    return true;
+                }
+                MqValueResolver.ResolvedValue queue = resolveBeanValue(
+                        bindCall.getArgumentList().getExpressions()[0], false, dependencies);
+                MqValueResolver.ResolvedValue exchange = resolveBeanValue(
+                        toCall.getArgumentList().getExpressions()[0], true, dependencies);
+                MqValueResolver.ResolvedValue routingKey = resolveBindingKey(toCall, dependencies);
+                String exchangeType = resolveExchangeType(toCall.getArgumentList().getExpressions()[0]);
+                PsiElement anchor = bindCall.getMethodExpression().getReferenceNameElement();
+                if (anchor == null) {
+                    return true;
+                }
+                bindings.add(new BindingRelation(anchor, queue, exchange, routingKey, exchangeType));
+                return true;
+            });
+        }
+        return bindings;
+    }
+
+    private MqEndpoint bindingEndpoint(BindingRelation binding) {
+        MqEndpoint.ResolutionState state = combinedState(
+                binding.queue, binding.exchange, binding.routingKey);
+        List<String> keys = binding.routingKey.value() == null || binding.routingKey.value().isBlank()
+                ? List.of() : List.of(binding.routingKey.value());
+        MqDestination destination = MqDestination.rabbitConsumer(
+                binding.exchange.value() == null ? "" : binding.exchange.value(),
+                binding.queue.value() == null ? "" : binding.queue.value(),
+                keys,
+                binding.exchangeType);
+        return MqEndpointParser.endpoint(binding.anchor, MqEndpoint.SystemType.RABBITMQ,
+                MqEndpoint.Role.BINDING, destination, state,
+                state == MqEndpoint.ResolutionState.DYNAMIC
+                        ? firstMessage(binding.queue, binding.exchange, binding.routingKey) : null);
+    }
+
+    private List<MqEndpoint> applyBindings(List<MqEndpoint> endpoints, List<BindingRelation> bindings) {
+        if (bindings.isEmpty()) {
+            return endpoints;
+        }
+        List<MqEndpoint> result = new ArrayList<>();
+        for (MqEndpoint endpoint : endpoints) {
+            String queue = endpoint.destination().queue();
+            if (endpoint.system() != MqEndpoint.SystemType.RABBITMQ
+                    || queue == null || queue.isEmpty()
+                    || (endpoint.role() != MqEndpoint.Role.CONSUMER
+                    && endpoint.role() != MqEndpoint.Role.DECLARATION)
+                    || (endpoint.destination().exchange() != null && !endpoint.destination().exchange().isEmpty())) {
+                result.add(endpoint);
+                continue;
+            }
+            List<BindingRelation> matches = bindings.stream()
+                    .filter(binding -> binding.queue.resolved() && queue.equals(binding.queue.value()))
+                    .toList();
+            if (matches.isEmpty()) {
+                result.add(endpoint);
+                continue;
+            }
+            for (BindingRelation binding : matches) {
+                MqEndpoint.ResolutionState state = combinedState(
+                        binding.queue, binding.exchange, binding.routingKey);
+                List<String> keys = binding.routingKey.value() == null || binding.routingKey.value().isBlank()
+                        ? List.of() : List.of(binding.routingKey.value());
+                MqDestination destination = MqDestination.rabbitConsumer(
+                        binding.exchange.value() == null ? "" : binding.exchange.value(),
+                        queue, keys, binding.exchangeType);
+                result.add(copyWithDestination(endpoint, destination, state,
+                        state == MqEndpoint.ResolutionState.DYNAMIC
+                                ? firstMessage(binding.queue, binding.exchange, binding.routingKey) : null));
+            }
+        }
+        return result;
+    }
+
+    private MqEndpoint copyWithDestination(
+            MqEndpoint endpoint,
+            MqDestination destination,
+            MqEndpoint.ResolutionState state,
+            String message) {
+        return new MqEndpoint(endpoint.endpointId() + ":" + destination.summary(), endpoint.system(), endpoint.role(),
+                destination, state, message, endpoint.sourcePointer(), endpoint.moduleName(), endpoint.fileName(),
+                endpoint.className(), endpoint.memberName());
+    }
+
+    private MqValueResolver.ResolvedValue resolveBeanValue(
+            PsiExpression expression, boolean exchange, Set<Object> dependencies) {
+        if (!(expression instanceof PsiMethodCallExpression call)) {
+            return valueResolver.resolveExpression(expression, dependencies);
+        }
+        PsiMethod method = call.resolveMethod();
+        if (method == null) {
+            return MqValueResolver.ResolvedValue.dynamic("RabbitMQ bean method cannot be resolved");
+        }
+        for (PsiMethodCallExpression nested : PsiTreeUtil.findChildrenOfType(method, PsiMethodCallExpression.class)) {
+            String name = nested.getMethodExpression().getReferenceName();
+            if ((!exchange && "durable".equals(name)) || (exchange && isExchangeBuilderMethod(name))) {
+                if (nested.getArgumentList().getExpressionCount() == 0) {
+                    continue;
+                }
+                return valueResolver.resolveExpression(nested.getArgumentList().getExpressions()[0], dependencies);
+            }
+        }
+        for (PsiNewExpression creation : PsiTreeUtil.findChildrenOfType(method, PsiNewExpression.class)) {
+            if (creation.getArgumentList() == null || creation.getArgumentList().getExpressionCount() == 0) {
+                continue;
+            }
+            String type = creation.getClassReference() == null
+                    ? "" : creation.getClassReference().getReferenceName();
+            type = type == null ? "" : type;
+            if ((!exchange && "Queue".equals(type)) || (exchange && type.endsWith("Exchange"))) {
+                return valueResolver.resolveExpression(creation.getArgumentList().getExpressions()[0], dependencies);
+            }
+        }
+        for (PsiReturnStatement statement : PsiTreeUtil.findChildrenOfType(method, PsiReturnStatement.class)) {
+            PsiExpression returnExpression = statement.getReturnValue();
+            if (returnExpression instanceof PsiReferenceExpression reference
+                    && reference.resolve() instanceof PsiVariable variable
+                    && variable.getInitializer() != null) {
+                PsiExpression initializer = variable.getInitializer();
+                MqValueResolver.ResolvedValue value = resolveBeanExpression(initializer, exchange, dependencies);
+                if (value != null) {
+                    return value;
+                }
+            }
+        }
+        return MqValueResolver.ResolvedValue.dynamic("RabbitMQ bean name is not statically resolved");
+    }
+
+    private MqValueResolver.ResolvedValue resolveBeanExpression(
+            PsiExpression expression, boolean exchange, Set<Object> dependencies) {
+        if (expression instanceof PsiMethodCallExpression call && call.resolveMethod() != null) {
+            return resolveBeanValue(call, exchange, dependencies);
+        }
+        if (expression instanceof PsiNewExpression creation && creation.getArgumentList() != null
+                && creation.getArgumentList().getExpressionCount() > 0) {
+            return valueResolver.resolveExpression(creation.getArgumentList().getExpressions()[0], dependencies);
+        }
+        return valueResolver.resolveExpression(expression, dependencies);
+    }
+
+    private MqValueResolver.ResolvedValue resolveBindingKey(
+            PsiMethodCallExpression toCall, Set<Object> dependencies) {
+        PsiMethodCallExpression withCall = chainedCall(toCall, "with");
+        if (withCall == null || withCall.getArgumentList().getExpressionCount() == 0) {
+            return MqValueResolver.ResolvedValue.staticValue("");
+        }
+        return valueResolver.resolveExpression(withCall.getArgumentList().getExpressions()[0], dependencies);
+    }
+
+    private String resolveExchangeType(PsiExpression expression) {
+        if (!(expression instanceof PsiMethodCallExpression call) || call.resolveMethod() == null) {
+            return "direct";
+        }
+        for (PsiMethodCallExpression nested : PsiTreeUtil.findChildrenOfType(
+                call.resolveMethod(), PsiMethodCallExpression.class)) {
+            String name = nested.getMethodExpression().getReferenceName();
+            if (isExchangeBuilderMethod(name)) {
+                return name.substring(0, name.length() - "Exchange".length());
+            }
+        }
+        for (PsiNewExpression creation : PsiTreeUtil.findChildrenOfType(
+                call.resolveMethod(), PsiNewExpression.class)) {
+            if (creation.getClassReference() != null) {
+                String type = creation.getClassReference().getReferenceName();
+                if (type != null && type.endsWith("Exchange")) {
+                    return type.substring(0, type.length() - "Exchange".length()).toLowerCase();
+                }
+            }
+        }
+        return "direct";
+    }
+
+    private boolean isExchangeBuilderMethod(String name) {
+        return List.of("directExchange", "topicExchange", "fanoutExchange", "headersExchange")
+                .contains(name);
+    }
+
+    private PsiMethodCallExpression chainedCall(PsiMethodCallExpression call, String methodName) {
+        if (!(call.getParent() instanceof PsiReferenceExpression reference)
+                || !methodName.equals(reference.getReferenceName())
+                || !(reference.getParent() instanceof PsiMethodCallExpression chained)) {
+            return null;
+        }
+        return chained;
+    }
+
+    private record BindingRelation(
+            PsiElement anchor,
+            MqValueResolver.ResolvedValue queue,
+            MqValueResolver.ResolvedValue exchange,
+            MqValueResolver.ResolvedValue routingKey,
+            String exchangeType) {
+    }
+
+    private List<MqEndpoint> parseConsumer(PsiElement anchor, Set<Object> dependencies) {
+        if (!(anchor instanceof PsiIdentifier) || !(anchor.getParent() instanceof PsiModifierListOwner owner)) {
+            return List.of();
+        }
+        PsiAnnotation listener = MqEndpointParser.annotation(owner, LISTENER);
+        if (listener == null) {
+            return List.of();
+        }
+
+        List<MqEndpoint> endpoints = new ArrayList<>();
+        for (PsiAnnotationMemberValue value : MqEndpointParser.annotationValues(listener, "queues")) {
+            MqValueResolver.ResolvedValue queue = valueResolver.resolveAnnotationValue(value, anchor, dependencies);
+            endpoints.add(consumer(anchor, "", queue, List.of(queue.value() == null ? "" : queue.value()),
+                    "direct", queue.state(), queue.message()));
+        }
+        for (PsiAnnotationMemberValue value : MqEndpointParser.annotationValues(listener, "queuesToDeclare")) {
+            if (value instanceof PsiAnnotation queueAnnotation) {
+                MqValueResolver.ResolvedValue queue = annotationValue(queueAnnotation, "value", anchor, dependencies);
+                endpoints.add(consumer(anchor, "", queue, List.of(queue.value() == null ? "" : queue.value()),
+                        "direct", queue.state(), queue.message()));
+            }
+        }
+        for (PsiAnnotationMemberValue value : MqEndpointParser.annotationValues(listener, "bindings")) {
+            if (value instanceof PsiAnnotation binding) {
+                endpoints.addAll(parseBinding(anchor, binding, dependencies));
+            }
+        }
+        if (endpoints.isEmpty()) {
+            endpoints.add(consumer(anchor, "", MqValueResolver.ResolvedValue.dynamic("Rabbit listener queue is dynamic"),
+                    List.of(), "direct", MqEndpoint.ResolutionState.DYNAMIC, "Rabbit listener queue is dynamic"));
+        }
+        return endpoints;
+    }
+
+    private List<MqEndpoint> parseBinding(PsiElement anchor, PsiAnnotation binding, Set<Object> dependencies) {
+        PsiAnnotationMemberValue queueValue = binding.findAttributeValue("value");
+        PsiAnnotationMemberValue exchangeValue = binding.findAttributeValue("exchange");
+        if (!(queueValue instanceof PsiAnnotation queueAnnotation)
+                || !(exchangeValue instanceof PsiAnnotation exchangeAnnotation)) {
+            return List.of();
+        }
+        MqValueResolver.ResolvedValue queue = annotationValue(queueAnnotation, "value", anchor, dependencies);
+        MqValueResolver.ResolvedValue exchange = annotationValue(exchangeAnnotation, "value", anchor, dependencies);
+        MqValueResolver.ResolvedValue type = annotationValue(exchangeAnnotation, "type", anchor, dependencies);
+        List<MqValueResolver.ResolvedValue> keys = new ArrayList<>();
+        for (PsiAnnotationMemberValue key : MqEndpointParser.annotationValues(binding, "key")) {
+            keys.add(valueResolver.resolveAnnotationValue(key, anchor, dependencies));
+        }
+        if (keys.isEmpty()) {
+            keys.add(MqValueResolver.ResolvedValue.staticValue(""));
+        }
+
+        List<MqEndpoint> endpoints = new ArrayList<>();
+        for (MqValueResolver.ResolvedValue key : keys) {
+            MqEndpoint.ResolutionState state = combinedState(queue, exchange, type, key);
+            String exchangeType = type.value() == null || type.value().isBlank() ? "direct" : type.value();
+            endpoints.add(consumer(anchor, exchange.value() == null ? "" : exchange.value(), queue,
+                    key.value() == null || key.value().isBlank() ? List.of() : List.of(key.value()),
+                    exchangeType, state, state == MqEndpoint.ResolutionState.DYNAMIC
+                            ? firstMessage(queue, exchange, type, key) : null));
+        }
+        return endpoints;
+    }
+
+    private MqEndpoint consumer(
+            PsiElement anchor,
+            String exchange,
+            MqValueResolver.ResolvedValue queue,
+            List<String> keys,
+            String exchangeType,
+            MqEndpoint.ResolutionState state,
+            String message) {
+        return MqEndpointParser.endpoint(anchor, MqEndpoint.SystemType.RABBITMQ, MqEndpoint.Role.CONSUMER,
+                MqDestination.rabbitConsumer(exchange, queue.value() == null ? "" : queue.value(), keys, exchangeType),
+                state, message);
+    }
+
+    private MqEndpoint dynamicProducer(PsiElement anchor, String message) {
+        return MqEndpointParser.endpoint(anchor, MqEndpoint.SystemType.RABBITMQ, MqEndpoint.Role.PRODUCER,
+                MqDestination.rabbitProducer("", ""), MqEndpoint.ResolutionState.DYNAMIC, message);
+    }
+
+    private MqValueResolver.ResolvedValue annotationValue(
+            PsiAnnotation annotation, String name, PsiElement context, Set<Object> dependencies) {
+        PsiAnnotationMemberValue value = annotation.findAttributeValue(name);
+        if (value == null) {
+            return MqValueResolver.ResolvedValue.staticValue("");
+        }
+        return valueResolver.resolveAnnotationValue(value, context, dependencies);
+    }
+
+    private boolean isType(PsiClass owner, String qualifiedName) {
+        return qualifiedName.equals(owner.getQualifiedName()) || InheritanceUtil.isInheritor(owner, qualifiedName);
+    }
+
+    private int leadingStringParameters(PsiMethod method) {
+        int count = 0;
+        for (var parameter : method.getParameterList().getParameters()) {
+            if (!MqEndpointParser.isStringType(parameter.getType())) {
+                break;
+            }
+            count++;
+        }
+        return count;
+    }
+
+    private PsiMethodCallExpression methodCall(PsiElement anchor) {
+        PsiReferenceExpression reference;
+        if (anchor instanceof PsiReferenceExpression expression) {
+            reference = expression;
+        } else if (anchor instanceof PsiIdentifier
+                && anchor.getParent() instanceof PsiReferenceExpression expression) {
+            reference = expression;
+        } else {
+            return null;
+        }
+        return reference.getParent() instanceof PsiMethodCallExpression call ? call : null;
+    }
+
+    private MqEndpoint.ResolutionState combinedState(MqValueResolver.ResolvedValue... values) {
+        boolean config = false;
+        for (MqValueResolver.ResolvedValue value : values) {
+            if (!value.resolved()) {
+                return MqEndpoint.ResolutionState.DYNAMIC;
+            }
+            config |= value.state() == MqEndpoint.ResolutionState.CONFIG_RESOLVED;
+        }
+        return config ? MqEndpoint.ResolutionState.CONFIG_RESOLVED : MqEndpoint.ResolutionState.STATIC;
+    }
+
+    private String firstMessage(MqValueResolver.ResolvedValue... values) {
+        for (MqValueResolver.ResolvedValue value : values) {
+            if (!value.resolved()) {
+                return value.message();
+            }
+        }
+        return null;
+    }
+}
