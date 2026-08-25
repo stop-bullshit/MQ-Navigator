@@ -31,4 +31,11 @@ The plugin does not connect to RabbitMQ, Kafka, or RocketMQ and does not modify 
 
 ## Versioning
 
-The plugin uses Semantic Versioning (`MAJOR.MINOR.PATCH`): compatible bug fixes increment `PATCH`, backward-compatible user-visible features increment `MINOR`, and breaking changes increment `MAJOR`. The current release is `0.2.3`.
+The plugin uses Semantic Versioning (`MAJOR.MINOR.PATCH`): compatible bug fixes increment `PATCH`, backward-compatible user-visible features increment `MINOR`, and breaking changes increment `MAJOR`. The next release version is stored as `pluginVersion` in `gradle.properties`.
+
+```powershell
+.\gradlew.bat buildSnapshot  # Builds <version>-SNAPSHOT for local testing without changing pluginVersion
+.\gradlew.bat buildRelease   # Builds <version> and advances pluginVersion to the next PATCH version
+```
+
+Both packages are written to `build/distributions/`. `buildRelease` and `buildSnapshot` must be run separately.
