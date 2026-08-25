@@ -8,6 +8,8 @@ import com.intellij.psi.PsiConditionalExpression;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiExpression;
 import com.intellij.psi.PsiIdentifier;
+import com.intellij.psi.PsiIfStatement;
+import com.intellij.psi.PsiLoopStatement;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiMethodCallExpression;
 import com.intellij.psi.PsiModifierListOwner;
@@ -15,19 +17,24 @@ import com.intellij.psi.PsiNewExpression;
 import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiReferenceExpression;
 import com.intellij.psi.PsiReturnStatement;
+import com.intellij.psi.PsiSwitchBlock;
 import com.intellij.psi.PsiVariable;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AnnotatedElementsSearch;
 import com.intellij.psi.search.searches.MethodReferencesSearch;
 import com.intellij.psi.util.InheritanceUtil;
+import com.intellij.psi.util.PsiUtil;
 import com.intellij.psi.util.PsiTreeUtil;
 import cn.luckyh.mqx.model.MqDestination;
 import cn.luckyh.mqx.model.MqEndpoint;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -40,6 +47,11 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
     private static final String EXCHANGE_BUILDER = "org.springframework.amqp.core.ExchangeBuilder";
     private static final String BINDING_BUILDER = "org.springframework.amqp.core.BindingBuilder";
     private static final String LISTENER = "org.springframework.amqp.rabbit.annotation.RabbitListener";
+    private static final String DEAD_LETTER_EXCHANGE = "x-dead-letter-exchange";
+    private static final String DEAD_LETTER_ROUTING_KEY = "x-dead-letter-routing-key";
+    private static final String MESSAGE_TTL = "x-message-ttl";
+    private static final Set<String> SPECIAL_QUEUE_ARGUMENTS = Set.of(
+            DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, MESSAGE_TTL);
 
     private final MqValueResolver valueResolver;
 
@@ -173,8 +185,212 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
         String queueName = queue.value() == null ? "" : queue.value();
         return Optional.of(MqEndpointParser.endpoint(anchor, MqEndpoint.SystemType.RABBITMQ,
                 MqEndpoint.Role.DECLARATION,
-                MqDestination.rabbitConsumer("", queueName, List.of(queueName), "direct"),
+                MqDestination.rabbitQueue(queueName, resolveQueueSettings(call, dependencies)),
                 queue.state(), queue.message()));
+    }
+
+    private MqDestination.RabbitQueueSettings resolveQueueSettings(
+            PsiMethodCallExpression durableCall,
+            Set<Object> dependencies) {
+        Map<String, PsiExpression> argumentValues = new LinkedHashMap<>();
+        Set<String> dynamicArguments = new LinkedHashSet<>();
+        PsiMethodCallExpression current = durableCall;
+        while ((current = nextChainedCall(current)) != null) {
+            String methodName = current.getMethodExpression().getReferenceName();
+            PsiExpression[] arguments = current.getArgumentList().getExpressions();
+            if ("withArgument".equals(methodName) && arguments.length >= 2) {
+                collectQueueArgument(
+                        arguments[0], arguments[1], false,
+                        argumentValues, dynamicArguments, dependencies);
+            } else if ("withArguments".equals(methodName) && arguments.length > 0) {
+                collectQueueArgumentMap(
+                        arguments[0], current, argumentValues, dynamicArguments, dependencies);
+            }
+        }
+
+        boolean deadLetterExchangeConfigured = configured(
+                DEAD_LETTER_EXCHANGE, argumentValues, dynamicArguments);
+        boolean deadLetterRoutingKeyConfigured = configured(
+                DEAD_LETTER_ROUTING_KEY, argumentValues, dynamicArguments);
+        boolean messageTtlConfigured = configured(MESSAGE_TTL, argumentValues, dynamicArguments);
+        if (!deadLetterExchangeConfigured && !deadLetterRoutingKeyConfigured && !messageTtlConfigured) {
+            return null;
+        }
+
+        List<String> diagnostics = new ArrayList<>();
+        String deadLetterExchange = resolveQueueStringArgument(
+                DEAD_LETTER_EXCHANGE, argumentValues, dynamicArguments, dependencies, diagnostics);
+        String deadLetterRoutingKey = resolveQueueStringArgument(
+                DEAD_LETTER_ROUTING_KEY, argumentValues, dynamicArguments, dependencies, diagnostics);
+        Long messageTtlMillis = resolveMessageTtl(
+                argumentValues, dynamicArguments, diagnostics, durableCall);
+        return new MqDestination.RabbitQueueSettings(
+                deadLetterExchangeConfigured, deadLetterExchange,
+                deadLetterRoutingKeyConfigured, deadLetterRoutingKey,
+                messageTtlConfigured, messageTtlMillis, diagnostics);
+    }
+
+    private void collectQueueArgumentMap(
+            PsiExpression mapExpression,
+            PsiMethodCallExpression withArgumentsCall,
+            Map<String, PsiExpression> argumentValues,
+            Set<String> dynamicArguments,
+            Set<Object> dependencies) {
+        if (mapExpression instanceof PsiMethodCallExpression mapCall && isMapOfCall(mapCall)) {
+            PsiExpression[] arguments = mapCall.getArgumentList().getExpressions();
+            for (int index = 0; index + 1 < arguments.length; index += 2) {
+                collectQueueArgument(
+                        arguments[index], arguments[index + 1], false,
+                        argumentValues, dynamicArguments, dependencies);
+            }
+            return;
+        }
+        if (!(mapExpression instanceof PsiReferenceExpression reference)
+                || !(reference.resolve() instanceof PsiVariable variable)) {
+            return;
+        }
+
+        if (variable.getInitializer() instanceof PsiMethodCallExpression initializer
+                && isMapOfCall(initializer)) {
+            PsiExpression[] arguments = initializer.getArgumentList().getExpressions();
+            for (int index = 0; index + 1 < arguments.length; index += 2) {
+                collectQueueArgument(
+                        arguments[index], arguments[index + 1], false,
+                        argumentValues, dynamicArguments, dependencies);
+            }
+        }
+
+        PsiMethod owner = PsiTreeUtil.getParentOfType(withArgumentsCall, PsiMethod.class);
+        if (owner == null) {
+            return;
+        }
+        List<PsiMethodCallExpression> calls = new ArrayList<>(
+                PsiTreeUtil.findChildrenOfType(owner, PsiMethodCallExpression.class));
+        calls.sort(Comparator.comparingInt(PsiElement::getTextOffset));
+        for (PsiMethodCallExpression call : calls) {
+            if (call.getTextOffset() >= withArgumentsCall.getTextOffset()
+                    || !"put".equals(call.getMethodExpression().getReferenceName())) {
+                continue;
+            }
+            PsiExpression qualifier = call.getMethodExpression().getQualifierExpression();
+            PsiExpression[] arguments = call.getArgumentList().getExpressions();
+            if (!(qualifier instanceof PsiReferenceExpression mapReference)
+                    || mapReference.resolve() != variable || arguments.length < 2) {
+                continue;
+            }
+            collectQueueArgument(
+                    arguments[0], arguments[1], isConditional(call),
+                    argumentValues, dynamicArguments, dependencies);
+        }
+    }
+
+    private void collectQueueArgument(
+            PsiExpression keyExpression,
+            PsiExpression valueExpression,
+            boolean conditional,
+            Map<String, PsiExpression> argumentValues,
+            Set<String> dynamicArguments,
+            Set<Object> dependencies) {
+        MqValueResolver.ResolvedValue key = valueResolver.resolveExpression(keyExpression, dependencies);
+        if (!key.resolved() || !SPECIAL_QUEUE_ARGUMENTS.contains(key.value())) {
+            return;
+        }
+        if (conditional) {
+            argumentValues.remove(key.value());
+            dynamicArguments.add(key.value());
+            return;
+        }
+        dynamicArguments.remove(key.value());
+        argumentValues.put(key.value(), valueExpression);
+    }
+
+    private boolean isMapOfCall(PsiMethodCallExpression call) {
+        PsiMethod method = call.resolveMethod();
+        if (method != null
+                && "of".equals(method.getName())
+                && method.getContainingClass() != null
+                && "java.util.Map".equals(method.getContainingClass().getQualifiedName())) {
+            return true;
+        }
+        PsiExpression qualifier = call.getMethodExpression().getQualifierExpression();
+        PsiClass resultType = PsiUtil.resolveClassInClassTypeOnly(call.getType());
+        return "of".equals(call.getMethodExpression().getReferenceName())
+                && (resultType != null && "java.util.Map".equals(resultType.getQualifiedName())
+                || qualifier != null && List.of("Map", "java.util.Map").contains(qualifier.getText()));
+    }
+
+    private String resolveQueueStringArgument(
+            String argumentName,
+            Map<String, PsiExpression> argumentValues,
+            Set<String> dynamicArguments,
+            Set<Object> dependencies,
+            List<String> diagnostics) {
+        if (dynamicArguments.contains(argumentName)) {
+            diagnostics.add(argumentName + " is not statically resolved");
+            return null;
+        }
+        PsiExpression expression = argumentValues.get(argumentName);
+        if (expression == null) {
+            return null;
+        }
+        MqValueResolver.ResolvedValue value = valueResolver.resolveExpression(expression, dependencies);
+        if (!value.resolved()) {
+            diagnostics.add(argumentName + " is not statically resolved");
+            return null;
+        }
+        return value.value();
+    }
+
+    private Long resolveMessageTtl(
+            Map<String, PsiExpression> argumentValues,
+            Set<String> dynamicArguments,
+            List<String> diagnostics,
+            PsiElement context) {
+        if (dynamicArguments.contains(MESSAGE_TTL)) {
+            diagnostics.add(MESSAGE_TTL + " is not statically resolved");
+            return null;
+        }
+        PsiExpression expression = argumentValues.get(MESSAGE_TTL);
+        if (expression == null) {
+            return null;
+        }
+        Object value = JavaPsiFacade.getInstance(context.getProject())
+                .getConstantEvaluationHelper().computeConstantExpression(expression);
+        if (!(value instanceof Number number)) {
+            diagnostics.add(MESSAGE_TTL + " must be a non-negative whole number");
+            return null;
+        }
+        long millis = number.longValue();
+        if (millis < 0 || number.doubleValue() != millis) {
+            diagnostics.add(MESSAGE_TTL + " must be a non-negative whole number");
+            return null;
+        }
+        return millis;
+    }
+
+    private boolean configured(
+            String argumentName,
+            Map<String, PsiExpression> argumentValues,
+            Set<String> dynamicArguments) {
+        return argumentValues.containsKey(argumentName) || dynamicArguments.contains(argumentName);
+    }
+
+    private boolean isConditional(PsiElement element) {
+        PsiMethod owner = PsiTreeUtil.getParentOfType(element, PsiMethod.class);
+        for (PsiElement parent = element.getParent(); parent != null && parent != owner; parent = parent.getParent()) {
+            if (parent instanceof PsiIfStatement
+                    || parent instanceof PsiLoopStatement
+                    || parent instanceof PsiConditionalExpression
+                    || parent instanceof PsiSwitchBlock) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private PsiMethodCallExpression nextChainedCall(PsiMethodCallExpression call) {
+        return call.getParent() instanceof PsiReferenceExpression reference
+                && reference.getParent() instanceof PsiMethodCallExpression chained ? chained : null;
     }
 
     private List<MqEndpoint> parseProducerEndpoints(PsiElement anchor, Set<Object> dependencies) {
@@ -479,7 +695,11 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
                         binding.queue, binding.exchange, binding.routingKey);
                 List<String> keys = binding.routingKey.value() == null || binding.routingKey.value().isBlank()
                         ? List.of() : List.of(binding.routingKey.value());
-                MqDestination destination = MqDestination.rabbitConsumer(
+                MqDestination destination = endpoint.role() == MqEndpoint.Role.DECLARATION
+                        ? MqDestination.rabbitQueue(
+                        binding.exchange.value() == null ? "" : binding.exchange.value(),
+                        queue, keys, binding.exchangeType, endpoint.destination().rabbitQueueSettings())
+                        : MqDestination.rabbitConsumer(
                         binding.exchange.value() == null ? "" : binding.exchange.value(),
                         queue, keys, binding.exchangeType);
                 result.add(copyWithDestination(endpoint, destination, state,

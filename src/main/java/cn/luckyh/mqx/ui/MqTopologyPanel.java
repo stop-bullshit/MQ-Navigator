@@ -1,17 +1,20 @@
 package cn.luckyh.mqx.ui;
 
+import com.intellij.ide.util.PsiNavigationSupport;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
 import com.intellij.pom.Navigatable;
 import com.intellij.psi.PsiElement;
-import com.intellij.util.OpenSourceUtil;
 import com.intellij.ui.DocumentAdapter;
 import com.intellij.ui.ScrollPaneFactory;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.ui.treeStructure.SimpleTree;
 import com.intellij.util.concurrency.AppExecutorUtil;
@@ -23,24 +26,31 @@ import cn.luckyh.mqx.model.MqEndpoint;
 import cn.luckyh.mqx.navigation.MqNavigationService;
 import org.jetbrains.annotations.NotNull;
 
-import javax.swing.JComboBox;
 import javax.swing.JPanel;
+import javax.swing.JProgressBar;
 import javax.swing.JTree;
 import javax.swing.event.DocumentEvent;
+import javax.swing.event.TreeExpansionEvent;
+import javax.swing.event.TreeExpansionListener;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
 import java.awt.BorderLayout;
+import java.awt.Dimension;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Supplier;
 
 /**
  * RabbitMQ 拓扑树面板.
@@ -63,17 +73,29 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
             .thenComparing(MqEndpoint::endpointId);
 
     private final Project project;
+    private final Supplier<List<MqEndpoint>> endpointSupplier;
     private final SimpleTree tree = new SimpleTree();
     private final JBTextField searchField = new JBTextField();
-    private final JComboBox<String> endpointFilter = new JComboBox<>(new String[]{
+    private final JBLabel statusLabel = new JBLabel();
+    private final JProgressBar refreshProgressBar = new JProgressBar();
+    private final ComboBox<String> endpointFilter = new ComboBox<>(new String[]{
             FILTER_ALL, FILTER_CONSUMERS, FILTER_PRODUCERS, FILTER_TOPOLOGY, FILTER_UNRESOLVED
     });
     private final MqEndpointMatcher matcher = new MqEndpointMatcher();
+    private final Set<String> expandedModuleNames = new LinkedHashSet<>();
     private List<MqEndpoint> allEndpoints = List.of();
+    private boolean applyingTreeState;
+    private boolean refreshing;
+    private long refreshRequestId;
 
     public MqTopologyPanel(Project project) {
+        this(project, () -> MqNavigationService.getInstance(project).currentEndpoints());
+    }
+
+    MqTopologyPanel(Project project, Supplier<List<MqEndpoint>> endpointSupplier) {
         super(true, true);
         this.project = project;
+        this.endpointSupplier = endpointSupplier;
         tree.setRootVisible(true);
         tree.setShowsRootHandles(true);
         // 逻辑变动: 双击端点时禁止JTree先切换非叶子节点展开状态-20260818-1830-05
@@ -85,6 +107,17 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
                 if (event.getClickCount() == 2 && event.getButton() == MouseEvent.BUTTON1) {
                     openSelectedSource(event);
                 }
+            }
+        });
+        tree.addTreeExpansionListener(new TreeExpansionListener() {
+            @Override
+            public void treeExpanded(TreeExpansionEvent event) {
+                updateExpandedModuleState(event, true);
+            }
+
+            @Override
+            public void treeCollapsed(TreeExpansionEvent event) {
+                updateExpandedModuleState(event, false);
             }
         });
 
@@ -109,6 +142,24 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
         JPanel content = new JPanel(new BorderLayout());
         content.add(filterPanel, BorderLayout.NORTH);
         content.add(ScrollPaneFactory.createScrollPane(tree), BorderLayout.CENTER);
+        statusLabel.setName("mqTopologyStatus");
+        refreshProgressBar.setName("mqTopologyRefreshProgress");
+        refreshProgressBar.setStringPainted(false);
+        setRefreshProgress(false);
+        Dimension progressSize = refreshProgressBar.getPreferredSize();
+        Dimension progressSlotSize = new Dimension(
+                progressSize.width,
+                Math.max(progressSize.height, statusLabel.getFontMetrics(statusLabel.getFont()).getHeight()));
+        JPanel progressSlot = new JPanel(new BorderLayout());
+        progressSlot.setOpaque(false);
+        progressSlot.setPreferredSize(progressSlotSize);
+        progressSlot.setMinimumSize(progressSlotSize);
+        progressSlot.add(refreshProgressBar, BorderLayout.CENTER);
+        JPanel statusPanel = new JPanel(new BorderLayout(JBUI.scale(6), 0));
+        statusPanel.setBorder(JBUI.Borders.empty(2, 4, 4, 4));
+        statusPanel.add(statusLabel, BorderLayout.CENTER);
+        statusPanel.add(progressSlot, BorderLayout.EAST);
+        content.add(statusPanel, BorderLayout.SOUTH);
         setContent(content);
     }
 
@@ -116,11 +167,44 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
         if (project.isDisposed()) {
             return;
         }
-        ReadAction.nonBlocking(() -> MqNavigationService.getInstance(project).currentEndpoints())
+        long requestId = ++refreshRequestId;
+        refreshing = true;
+        boolean waitingForIndex = DumbService.isDumb(project);
+        statusLabel.setText(waitingForIndex ? "等待项目索引完成" : "正在刷新 RabbitMQ 端点");
+        setRefreshProgress(!waitingForIndex);
+        ReadAction.nonBlocking(() -> {
+                    try {
+                        List<MqEndpoint> endpoints = endpointSupplier.get().stream()
+                                .filter(endpoint -> endpoint.system() == MqEndpoint.SystemType.RABBITMQ)
+                                .sorted(ENDPOINT_ORDER)
+                                .toList();
+                        return new RefreshResult(endpoints, null);
+                    } catch (RuntimeException exception) {
+                        return new RefreshResult(List.of(), exception);
+                    }
+                })
                 .inSmartMode(project)
                 .expireWith(project)
-                .finishOnUiThread(ModalityState.defaultModalityState(), this::replaceTree)
+                .finishOnUiThread(ModalityState.defaultModalityState(), result -> {
+                    if (project.isDisposed() || requestId != refreshRequestId) {
+                        return;
+                    }
+                    if (result.failure() != null) {
+                        refreshing = false;
+                        setRefreshProgress(false);
+                        statusLabel.setText("刷新失败，已保留上次结果");
+                        return;
+                    }
+                    refreshing = false;
+                    setRefreshProgress(false);
+                    replaceTree(result.endpoints());
+                })
                 .submit(AppExecutorUtil.getAppExecutorService());
+    }
+
+    private void setRefreshProgress(boolean active) {
+        refreshProgressBar.setIndeterminate(active);
+        refreshProgressBar.setVisible(active);
     }
 
     private ActionToolbar createToolbar() {
@@ -136,10 +220,7 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
         if (project.isDisposed()) {
             return;
         }
-        allEndpoints = endpoints.stream()
-                .filter(endpoint -> endpoint.system() == MqEndpoint.SystemType.RABBITMQ)
-                .sorted(ENDPOINT_ORDER)
-                .toList();
+        allEndpoints = endpoints;
         rebuildTree();
     }
 
@@ -160,18 +241,75 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
         DefaultMutableTreeNode root = new DefaultMutableTreeNode(
                 new TopologyItem("RabbitMQ (" + count + ")", null));
         addModuleNodes(root, visibleEndpoints);
-        tree.setModel(new DefaultTreeModel(root));
-        tree.setCellRenderer(new TopologyCellRenderer());
-        tree.expandRow(0);
-        for (int index = 0; index < root.getChildCount(); index++) {
-            DefaultMutableTreeNode moduleNode = (DefaultMutableTreeNode) root.getChildAt(index);
-            tree.expandPath(new TreePath(moduleNode.getPath()));
-        }
-        if (!query.isEmpty() && visibleEndpoints.size() <= 200) {
-            for (int row = 0; row < tree.getRowCount(); row++) {
-                tree.expandRow(row);
+        boolean filterActive = isFilterActive();
+        applyingTreeState = true;
+        try {
+            tree.setModel(new DefaultTreeModel(root));
+            tree.setCellRenderer(new TopologyCellRenderer());
+            tree.expandRow(0);
+            Set<String> currentModuleNames = new LinkedHashSet<>();
+            for (int index = 0; index < root.getChildCount(); index++) {
+                DefaultMutableTreeNode moduleNode = (DefaultMutableTreeNode) root.getChildAt(index);
+                TopologyItem item = (TopologyItem) moduleNode.getUserObject();
+                currentModuleNames.add(item.moduleName());
+                if (!filterActive && expandedModuleNames.contains(item.moduleName())) {
+                    tree.expandPath(new TreePath(moduleNode.getPath()));
+                }
+                if (filterActive) {
+                    expandFilterCategories(moduleNode);
+                }
             }
+            if (!filterActive) {
+                expandedModuleNames.retainAll(currentModuleNames);
+            }
+        } finally {
+            applyingTreeState = false;
         }
+        if (refreshing) {
+            return;
+        }
+        if (allEndpoints.isEmpty()) {
+            statusLabel.setText("未发现 RabbitMQ 端点");
+            return;
+        }
+        if (filterActive && visibleEndpoints.isEmpty()) {
+            statusLabel.setText("当前条件无匹配结果");
+            return;
+        }
+        statusLabel.setText("");
+    }
+
+    private void expandFilterCategories(DefaultMutableTreeNode node) {
+        TopologyItem item = (TopologyItem) node.getUserObject();
+        if (item.endpoint() != null) {
+            return;
+        }
+        tree.expandPath(new TreePath(node.getPath()));
+        for (int index = 0; index < node.getChildCount(); index++) {
+            expandFilterCategories((DefaultMutableTreeNode) node.getChildAt(index));
+        }
+    }
+
+    private void updateExpandedModuleState(TreeExpansionEvent event, boolean expanded) {
+        if (applyingTreeState || isFilterActive()) {
+            return;
+        }
+        Object selected = event.getPath().getLastPathComponent();
+        if (!(selected instanceof DefaultMutableTreeNode node)
+                || !(node.getUserObject() instanceof TopologyItem item)
+                || item.moduleName() == null) {
+            return;
+        }
+        if (expanded) {
+            expandedModuleNames.add(item.moduleName());
+        } else {
+            expandedModuleNames.remove(item.moduleName());
+        }
+    }
+
+    private boolean isFilterActive() {
+        return !searchField.getText().trim().isEmpty()
+                || !FILTER_ALL.equals(Objects.toString(endpointFilter.getSelectedItem(), FILTER_ALL));
     }
 
     private boolean matchesSelectedFilter(MqEndpoint endpoint, String selectedFilter) {
@@ -212,7 +350,7 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
         for (Map.Entry<String, List<MqEndpoint>> entry : endpointsByModule.entrySet()) {
             List<MqEndpoint> moduleEndpoints = entry.getValue();
             DefaultMutableTreeNode moduleNode = new DefaultMutableTreeNode(
-                    new TopologyItem(entry.getKey() + " (" + moduleEndpoints.size() + ")", null));
+                    new TopologyItem(entry.getKey() + " (" + moduleEndpoints.size() + ")", null, entry.getKey()));
             root.add(moduleNode);
 
             addEndpointCategory(moduleNode, "Consumers", moduleEndpoints.stream()
@@ -263,6 +401,10 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
     }
 
     private void addEndpointRelations(DefaultMutableTreeNode endpointNode, MqEndpoint endpoint) {
+        if (endpoint.role() == MqEndpoint.Role.DECLARATION) {
+            addDeadLetterRelations(endpointNode, endpoint);
+            return;
+        }
         if (endpoint.role() == MqEndpoint.Role.CONSUMER && endpoint.isResolved()) {
             addRelationCategory(endpointNode, "Bindings", allEndpoints.stream()
                     .filter(candidate -> candidate.role() == MqEndpoint.Role.BINDING)
@@ -288,6 +430,95 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
                             candidate.destination()) == MqEndpointMatcher.MatchKind.EXACT)
                     .toList());
         }
+    }
+
+    private void addDeadLetterRelations(DefaultMutableTreeNode endpointNode, MqEndpoint endpoint) {
+        MqDestination.RabbitQueueSettings settings = endpoint.destination().rabbitQueueSettings();
+        if (settings == null || !settings.deadLetterExchangeConfigured()) {
+            return;
+        }
+        if (settings.deadLetterExchange() == null) {
+            addUnresolvedDeadLetterTarget(endpointNode, "dead-letter exchange is not statically resolved");
+            return;
+        }
+
+        String deadLetterExchange = settings.deadLetterExchange();
+        List<MqEndpoint> exchanges = new ArrayList<>();
+        for (MqEndpoint candidate : allEndpoints) {
+            if (candidate.role() == MqEndpoint.Role.EXCHANGE_DECLARATION
+                    && candidate.isResolved()
+                    && Objects.equals(deadLetterExchange, candidate.destination().exchange())) {
+                exchanges.add(candidate);
+            }
+        }
+        addRelationCategory(endpointNode, "Dead-letter exchanges", exchanges);
+
+        List<MqEndpoint> bindings = new ArrayList<>();
+        if (!deadLetterExchange.isEmpty()) {
+            for (MqEndpoint candidate : allEndpoints) {
+                if (candidate.role() != MqEndpoint.Role.BINDING || !candidate.isResolved()
+                        || !Objects.equals(deadLetterExchange, candidate.destination().exchange())) {
+                    continue;
+                }
+                if (!settings.deadLetterRoutingKeyConfigured()) {
+                    if ("fanout".equals(candidate.destination().exchangeType())) {
+                        bindings.add(candidate);
+                    }
+                    continue;
+                }
+                if (settings.deadLetterRoutingKey() != null
+                        && matcher.match(
+                        MqEndpoint.SystemType.RABBITMQ,
+                        MqDestination.rabbitProducer(deadLetterExchange, settings.deadLetterRoutingKey()),
+                        candidate.destination()) == MqEndpointMatcher.MatchKind.EXACT) {
+                    bindings.add(candidate);
+                }
+            }
+        }
+        addRelationCategory(endpointNode, "Dead-letter bindings", bindings);
+
+        Set<String> targetQueueNames = new LinkedHashSet<>();
+        for (MqEndpoint binding : bindings) {
+            if (binding.destination().queue() != null && !binding.destination().queue().isEmpty()) {
+                targetQueueNames.add(binding.destination().queue());
+            }
+        }
+        if (deadLetterExchange.isEmpty()
+                && settings.deadLetterRoutingKeyConfigured()
+                && settings.deadLetterRoutingKey() != null) {
+            targetQueueNames.add(settings.deadLetterRoutingKey());
+        }
+
+        Map<String, MqEndpoint> targetQueues = new LinkedHashMap<>();
+        for (MqEndpoint candidate : allEndpoints) {
+            if (candidate.role() != MqEndpoint.Role.DECLARATION || !candidate.isResolved()
+                    || !targetQueueNames.contains(candidate.destination().queue())) {
+                continue;
+            }
+            String sourceKey = candidate.moduleName() + '\n'
+                    + candidate.fileName() + '\n'
+                    + candidate.className() + '\n'
+                    + candidate.memberName() + '\n'
+                    + candidate.destination().queue();
+            targetQueues.putIfAbsent(sourceKey, candidate);
+        }
+        addRelationCategory(endpointNode, "Dead-letter queues", new ArrayList<>(targetQueues.values()));
+        if (targetQueues.isEmpty()) {
+            String reason;
+            if (settings.deadLetterRoutingKeyConfigured() && settings.deadLetterRoutingKey() == null) {
+                reason = "dead-letter routing key is not statically resolved";
+            } else if (!settings.deadLetterRoutingKeyConfigured()) {
+                reason = "original routing key does not determine a target in the current project";
+            } else {
+                reason = "no matching binding or queue was found in the current project";
+            }
+            addUnresolvedDeadLetterTarget(endpointNode, reason);
+        }
+    }
+
+    private void addUnresolvedDeadLetterTarget(DefaultMutableTreeNode endpointNode, String reason) {
+        endpointNode.add(new DefaultMutableTreeNode(
+                new TopologyItem("Dead-letter target unresolved — " + reason, null)));
     }
 
     private void addRelationCategory(
@@ -325,6 +556,9 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
     }
 
     private void openSelectedSource(MouseEvent event) {
+        if (project.isDisposed()) {
+            return;
+        }
         // 逻辑变动: 直接使用双击坐标解析目标节点，避免首次双击读取旧选中项-20260818-1830-05
         TreePath path = tree.getPathForLocation(event.getX(), event.getY());
         if (path == null) {
@@ -338,20 +572,40 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
             return;
         }
         // 逻辑变动: 使用IDE源码导航入口一次定位到侧边栏端点源码-20260818-1830-05
-        ReadAction.run(() -> {
-            PsiElement element = item.endpoint().sourcePointer().getElement();
-            if (element != null && element.isValid()) {
-                PsiElement navigationElement = element.getNavigationElement();
-                if (navigationElement instanceof Navigatable navigatable
-                        && navigationElement.isValid()
-                        && navigatable.canNavigate()) {
-                    OpenSourceUtil.navigate(navigatable);
-                }
-            }
-        });
+        ReadAction.<Navigatable>nonBlocking(() -> {
+                    try {
+                        PsiElement element = item.endpoint().sourcePointer().getElement();
+                        if (element == null || !element.isValid()) {
+                            return null;
+                        }
+                        PsiElement navigationElement = element.getNavigationElement();
+                        PsiNavigationSupport navigationSupport = PsiNavigationSupport.getInstance();
+                        if (!navigationElement.isValid()
+                                || !navigationSupport.canNavigate(navigationElement)) {
+                            return null;
+                        }
+                        return navigationSupport.getDescriptor(navigationElement);
+                    } catch (com.intellij.psi.PsiInvalidElementAccessException exception) {
+                        return null;
+                    }
+                })
+                .expireWith(project)
+                .finishOnUiThread(ModalityState.defaultModalityState(), navigatable -> {
+                    if (!project.isDisposed() && navigatable != null && navigatable.canNavigate()) {
+                        navigatable.navigate(true);
+                    }
+                })
+                .submit(AppExecutorUtil.getAppExecutorService());
     }
 
-    private record TopologyItem(String label, MqEndpoint endpoint) {
+    private record TopologyItem(String label, MqEndpoint endpoint, String moduleName) {
+
+        private TopologyItem(String label, MqEndpoint endpoint) {
+            this(label, endpoint, null);
+        }
+    }
+
+    private record RefreshResult(List<MqEndpoint> endpoints, RuntimeException failure) {
     }
 
     private static final class TopologyCellRenderer extends DefaultTreeCellRenderer {
@@ -370,10 +624,18 @@ public final class MqTopologyPanel extends SimpleToolWindowPanel {
                 setText(item.label());
                 if (item.endpoint() == null) {
                     setToolTipText(item.label());
-                } else if (item.endpoint().resolutionMessage() != null) {
-                    setToolTipText(item.endpoint().resolutionMessage());
                 } else {
-                    setToolTipText(item.endpoint().destination().summary());
+                    List<String> messages = new ArrayList<>();
+                    if (item.endpoint().resolutionMessage() != null) {
+                        messages.add(item.endpoint().resolutionMessage());
+                    }
+                    MqDestination.RabbitQueueSettings settings =
+                            item.endpoint().destination().rabbitQueueSettings();
+                    if (settings != null) {
+                        messages.addAll(settings.diagnostics());
+                    }
+                    setToolTipText(messages.isEmpty()
+                            ? item.endpoint().destination().summary() : String.join("; ", messages));
                 }
             }
             return this;

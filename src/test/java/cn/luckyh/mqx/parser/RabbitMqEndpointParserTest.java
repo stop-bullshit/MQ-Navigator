@@ -2,11 +2,14 @@ package cn.luckyh.mqx.parser;
 
 import com.intellij.psi.PsiIdentifier;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
+import cn.luckyh.mqx.model.MqDestination;
 import cn.luckyh.mqx.model.MqEndpoint;
 
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 public class RabbitMqEndpointParserTest extends BasePlatformTestCase {
 
@@ -110,6 +113,343 @@ public class RabbitMqEndpointParserTest extends BasePlatformTestCase {
         assertEquals("orders.exchange", exchange.destination().exchange());
         assertEquals("topic", exchange.destination().exchangeType());
         assertEquals("exchange", exchange.memberName());
+    }
+
+    public void testQueueBuilderMapArgumentsExposeDelayQueueSettings() {
+        myFixture.addFileToProject("QueueConstants.java", """
+                class QueueConstants {
+                    static final String QUEUE = "write-off.queue";
+                    static final String DEAD_EXCHANGE = "write-off.dead.exchange";
+                    static final long DELAY_TIME = 300000L;
+                }
+                """);
+        myFixture.configureByText("DelayQueueConfiguration.java", """
+                import java.util.HashMap;
+                import java.util.Map;
+                class DelayQueueConfiguration {
+                    org.springframework.amqp.core.Queue queue() {
+                        Map<String, Object> args = new HashMap<>();
+                        args.put("x-dead-letter-exchange", QueueConstants.DEAD_EXCHANGE);
+                        args.put("x-message-ttl", QueueConstants.DELAY_TIME);
+                        args.put("x-quorum-initial-group-size", 3);
+                        return org.springframework.amqp.core.QueueBuilder.durable(QueueConstants.QUEUE)
+                            .quorum().withArguments(args).build();
+                    }
+                }
+                """);
+
+        MqEndpoint endpoint = parseQueueDeclaration();
+        MqDestination.RabbitQueueSettings settings = endpoint.destination().rabbitQueueSettings();
+
+        assertNotNull(settings);
+        assertEquals(MqDestination.RabbitQueueKind.DELAY, settings.kind());
+        assertEquals("write-off.dead.exchange", settings.deadLetterExchange());
+        assertFalse(settings.deadLetterRoutingKeyConfigured());
+        assertEquals(Long.valueOf(300000L), settings.messageTtlMillis());
+        assertTrue(settings.diagnostics().isEmpty());
+    }
+
+    public void testQueueBuilderSingleArgumentsExposeDeadLetterSettings() {
+        myFixture.configureByText("DeadLetterQueueConfiguration.java", """
+                class DeadLetterQueueConfiguration {
+                    org.springframework.amqp.core.Queue queue() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("ocr.queue")
+                            .withArgument("x-dead-letter-exchange", "ocr.dead.exchange")
+                            .withArgument("x-dead-letter-routing-key", "ocr.dead")
+                            .build();
+                    }
+                }
+                """);
+
+        MqDestination.RabbitQueueSettings settings =
+                parseQueueDeclaration().destination().rabbitQueueSettings();
+
+        assertNotNull(settings);
+        assertEquals(MqDestination.RabbitQueueKind.DEAD_LETTER_SOURCE, settings.kind());
+        assertEquals("ocr.dead.exchange", settings.deadLetterExchange());
+        assertTrue(settings.deadLetterRoutingKeyConfigured());
+        assertEquals("ocr.dead", settings.deadLetterRoutingKey());
+        assertFalse(settings.messageTtlConfigured());
+    }
+
+    public void testQueueBuilderMapOfAndZeroTtlRemainStatic() {
+        myFixture.configureByText("MapOfQueueConfiguration.java", """
+                import java.util.Map;
+                class MapOfQueueConfiguration {
+                    org.springframework.amqp.core.Queue queue() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("instant.queue")
+                            .withArguments(Map.of(
+                                "x-dead-letter-exchange", "instant.dead.exchange",
+                                "x-dead-letter-routing-key", "",
+                                "x-message-ttl", 0L))
+                            .build();
+                    }
+                }
+                """);
+
+        MqDestination.RabbitQueueSettings settings =
+                parseQueueDeclaration().destination().rabbitQueueSettings();
+
+        assertNotNull(settings);
+        assertEquals(MqDestination.RabbitQueueKind.DELAY, settings.kind());
+        assertEquals("", settings.deadLetterRoutingKey());
+        assertEquals(Long.valueOf(0L), settings.messageTtlMillis());
+        assertTrue(settings.diagnostics().isEmpty());
+    }
+
+    public void testStaticMapAndSingleArgumentsCoverTenSamplesEach() {
+        StringBuilder source = new StringBuilder("import java.util.Map;\nclass StaticSpecialQueueCases {\n");
+        for (int index = 0; index < 10; index++) {
+            long mapTtl = index < 5 ? 0L : index;
+            source.append("org.springframework.amqp.core.Queue map").append(index).append("() { return ")
+                    .append("org.springframework.amqp.core.QueueBuilder.durable(\"map.queue.")
+                    .append(index).append("\").withArguments(Map.of(")
+                    .append("\"x-dead-letter-exchange\", \"map.dead.").append(index).append("\", ")
+                    .append("\"x-dead-letter-routing-key\", \"map.key.").append(index).append("\", ")
+                    .append("\"x-message-ttl\", ").append(mapTtl).append("L)).build(); }\n");
+            source.append("org.springframework.amqp.core.Queue single").append(index).append("() { return ")
+                    .append("org.springframework.amqp.core.QueueBuilder.durable(\"single.queue.")
+                    .append(index).append("\").withArgument(\"x-dead-letter-exchange\", \"single.dead.")
+                    .append(index).append("\").withArgument(\"x-dead-letter-routing-key\", \"single.key.")
+                    .append(index).append("\").withArgument(\"x-message-ttl\", ")
+                    .append(index).append("L).build(); }\n");
+        }
+        source.append('}');
+        myFixture.configureByText("StaticSpecialQueueCases.java", source.toString());
+
+        Map<String, MqDestination.RabbitQueueSettings> settingsByQueue = new LinkedHashMap<>();
+        for (MqEndpoint endpoint : collectEndpoints()) {
+            if (endpoint.role() == MqEndpoint.Role.DECLARATION) {
+                settingsByQueue.put(endpoint.destination().queue(), endpoint.destination().rabbitQueueSettings());
+            }
+        }
+
+        assertEquals(20, settingsByQueue.size());
+        for (int index = 0; index < 10; index++) {
+            MqDestination.RabbitQueueSettings mapSettings = settingsByQueue.get("map.queue." + index);
+            assertNotNull(mapSettings);
+            assertEquals("map.dead." + index, mapSettings.deadLetterExchange());
+            assertEquals("map.key." + index, mapSettings.deadLetterRoutingKey());
+            assertEquals(Long.valueOf(index < 5 ? 0L : index), mapSettings.messageTtlMillis());
+
+            MqDestination.RabbitQueueSettings singleSettings = settingsByQueue.get("single.queue." + index);
+            assertNotNull(singleSettings);
+            assertEquals("single.dead." + index, singleSettings.deadLetterExchange());
+            assertEquals("single.key." + index, singleSettings.deadLetterRoutingKey());
+            assertEquals(Long.valueOf(index), singleSettings.messageTtlMillis());
+        }
+    }
+
+    public void testDynamicAndInvalidSpecialArgumentsKeepQueueVisible() {
+        myFixture.configureByText("DynamicQueueConfiguration.java", """
+                class DynamicQueueConfiguration {
+                    String exchangeName() { return System.getProperty("dead.exchange"); }
+                    org.springframework.amqp.core.Queue queue() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("dynamic.queue")
+                            .withArgument("x-dead-letter-exchange", exchangeName())
+                            .withArgument("x-message-ttl", "five-minutes")
+                            .build();
+                    }
+                }
+                """);
+
+        MqEndpoint endpoint = parseQueueDeclaration();
+        MqDestination.RabbitQueueSettings settings = endpoint.destination().rabbitQueueSettings();
+
+        assertTrue(endpoint.isResolved());
+        assertNotNull(settings);
+        assertTrue(settings.deadLetterExchangeConfigured());
+        assertNull(settings.deadLetterExchange());
+        assertTrue(settings.messageTtlConfigured());
+        assertNull(settings.messageTtlMillis());
+        assertEquals(MqDestination.RabbitQueueKind.DELAY, settings.kind());
+        assertTrue(settings.diagnostics().stream().anyMatch(message -> message.contains("x-dead-letter-exchange")));
+        assertTrue(settings.diagnostics().stream().anyMatch(message -> message.contains("x-message-ttl")));
+    }
+
+    public void testConditionalMapValueIsReportedAsDynamic() {
+        myFixture.configureByText("ConditionalQueueConfiguration.java", """
+                import java.util.HashMap;
+                import java.util.Map;
+                class ConditionalQueueConfiguration {
+                    org.springframework.amqp.core.Queue queue(boolean delayed) {
+                        Map<String, Object> args = new HashMap<>();
+                        args.put("x-dead-letter-exchange", "conditional.dead.exchange");
+                        if (delayed) {
+                            args.put("x-message-ttl", 1000L);
+                        }
+                        return org.springframework.amqp.core.QueueBuilder.durable("conditional.queue")
+                            .withArguments(args).build();
+                    }
+                }
+                """);
+
+        MqDestination.RabbitQueueSettings settings =
+                parseQueueDeclaration().destination().rabbitQueueSettings();
+
+        assertNotNull(settings);
+        assertEquals("conditional.dead.exchange", settings.deadLetterExchange());
+        assertTrue(settings.messageTtlConfigured());
+        assertNull(settings.messageTtlMillis());
+        assertTrue(settings.diagnostics().stream().anyMatch(message -> message.contains("x-message-ttl")));
+    }
+
+    public void testDynamicSpecialValuesCoverFiveSamplesPerCategory() {
+        StringBuilder source = new StringBuilder("""
+                import java.util.HashMap;
+                import java.util.Map;
+                class DynamicSpecialQueueCases {
+                    Object unknown() { return new Object(); }
+                """);
+        for (int index = 0; index < 5; index++) {
+            source.append("org.springframework.amqp.core.Queue dynamicExchange").append(index)
+                    .append("() { return org.springframework.amqp.core.QueueBuilder.durable(\"dynamic.exchange.")
+                    .append(index).append("\").withArgument(\"x-dead-letter-exchange\", unknown()).build(); }\n");
+            source.append("org.springframework.amqp.core.Queue dynamicKey").append(index)
+                    .append("() { return org.springframework.amqp.core.QueueBuilder.durable(\"dynamic.key.")
+                    .append(index).append("\").withArgument(\"x-dead-letter-exchange\", \"dead.exchange\")")
+                    .append(".withArgument(\"x-dead-letter-routing-key\", unknown()).build(); }\n");
+            source.append("org.springframework.amqp.core.Queue dynamicTtl").append(index)
+                    .append("() { return org.springframework.amqp.core.QueueBuilder.durable(\"dynamic.ttl.")
+                    .append(index).append("\").withArgument(\"x-message-ttl\", unknown()).build(); }\n");
+            source.append("org.springframework.amqp.core.Queue invalidTtl").append(index)
+                    .append("() { return org.springframework.amqp.core.QueueBuilder.durable(\"invalid.ttl.")
+                    .append(index).append("\").withArgument(\"x-message-ttl\", -1L).build(); }\n");
+            source.append("org.springframework.amqp.core.Queue nonNumericTtl").append(index)
+                    .append("() { return org.springframework.amqp.core.QueueBuilder.durable(\"non.numeric.ttl.")
+                    .append(index).append("\").withArgument(\"x-message-ttl\", \"invalid\").build(); }\n");
+            source.append("org.springframework.amqp.core.Queue branchMap").append(index)
+                    .append("(boolean delayed) { Map<String, Object> args = new HashMap<>(); ")
+                    .append("args.put(\"x-dead-letter-exchange\", \"dead.exchange\"); ")
+                    .append("if (delayed) { args.put(\"x-message-ttl\", 1000L); } return ")
+                    .append("org.springframework.amqp.core.QueueBuilder.durable(\"branch.map.")
+                    .append(index).append("\").withArguments(args).build(); }\n");
+        }
+        source.append('}');
+        myFixture.configureByText("DynamicSpecialQueueCases.java", source.toString());
+
+        Map<String, MqDestination.RabbitQueueSettings> settingsByQueue = new LinkedHashMap<>();
+        for (MqEndpoint endpoint : collectEndpoints()) {
+            if (endpoint.role() == MqEndpoint.Role.DECLARATION) {
+                settingsByQueue.put(endpoint.destination().queue(), endpoint.destination().rabbitQueueSettings());
+            }
+        }
+
+        assertEquals(30, settingsByQueue.size());
+        for (int index = 0; index < 5; index++) {
+            MqDestination.RabbitQueueSettings exchange = settingsByQueue.get("dynamic.exchange." + index);
+            assertNotNull(exchange);
+            assertNull(exchange.deadLetterExchange());
+            assertTrue(exchange.diagnostics().stream().anyMatch(message -> message.contains("x-dead-letter-exchange")));
+
+            MqDestination.RabbitQueueSettings routingKey = settingsByQueue.get("dynamic.key." + index);
+            assertNotNull(routingKey);
+            assertNull(routingKey.deadLetterRoutingKey());
+            assertTrue(routingKey.diagnostics().stream().anyMatch(message -> message.contains("x-dead-letter-routing-key")));
+
+            MqDestination.RabbitQueueSettings dynamicTtl = settingsByQueue.get("dynamic.ttl." + index);
+            assertNotNull(dynamicTtl);
+            assertNull(dynamicTtl.messageTtlMillis());
+            assertTrue(dynamicTtl.diagnostics().stream().anyMatch(message -> message.contains("x-message-ttl")));
+
+            MqDestination.RabbitQueueSettings invalidTtl = settingsByQueue.get("invalid.ttl." + index);
+            assertNotNull(invalidTtl);
+            assertNull(invalidTtl.messageTtlMillis());
+            assertTrue(invalidTtl.diagnostics().stream().anyMatch(message -> message.contains("x-message-ttl")));
+
+            MqDestination.RabbitQueueSettings nonNumericTtl = settingsByQueue.get("non.numeric.ttl." + index);
+            assertNotNull(nonNumericTtl);
+            assertNull(nonNumericTtl.messageTtlMillis());
+            assertTrue(nonNumericTtl.diagnostics().stream().anyMatch(message -> message.contains("x-message-ttl")));
+
+            MqDestination.RabbitQueueSettings branchMap = settingsByQueue.get("branch.map." + index);
+            assertNotNull(branchMap);
+            assertNull(branchMap.messageTtlMillis());
+            assertTrue(branchMap.diagnostics().stream().anyMatch(message -> message.contains("x-message-ttl")));
+        }
+    }
+
+    public void testQueueClassificationCoversTenSamplesPerKind() {
+        StringBuilder source = new StringBuilder("class QueueClassificationCases {\n");
+        for (int index = 0; index < 10; index++) {
+            source.append("org.springframework.amqp.core.Queue standard").append(index).append("() { return ")
+                    .append("org.springframework.amqp.core.QueueBuilder.durable(\"standard.")
+                    .append(index).append("\").withArgument(\"x-message-ttl\", ")
+                    .append(index).append("L).build(); }\n");
+            source.append("org.springframework.amqp.core.Queue dead").append(index).append("() { return ")
+                    .append("org.springframework.amqp.core.QueueBuilder.durable(\"dead.")
+                    .append(index).append("\").withArgument(\"x-dead-letter-exchange\", \"dead.exchange\")")
+                    .append(".build(); }\n");
+            source.append("org.springframework.amqp.core.Queue delay").append(index).append("() { return ")
+                    .append("org.springframework.amqp.core.QueueBuilder.durable(\"delay.")
+                    .append(index).append("\").withArgument(\"x-dead-letter-exchange\", \"dead.exchange\")")
+                    .append(".withArgument(\"x-message-ttl\", ").append(index).append("L).build(); }\n");
+        }
+        source.append('}');
+        myFixture.configureByText("QueueClassificationCases.java", source.toString());
+
+        List<MqEndpoint> declarations = collectEndpoints().stream()
+                .filter(endpoint -> endpoint.role() == MqEndpoint.Role.DECLARATION)
+                .toList();
+
+        assertEquals(30, declarations.size());
+        assertEquals(10, declarations.stream().filter(endpoint ->
+                endpoint.destination().rabbitQueueSettings().kind()
+                        == MqDestination.RabbitQueueKind.STANDARD).count());
+        assertEquals(10, declarations.stream().filter(endpoint ->
+                endpoint.destination().rabbitQueueSettings().kind()
+                        == MqDestination.RabbitQueueKind.DEAD_LETTER_SOURCE).count());
+        assertEquals(10, declarations.stream().filter(endpoint ->
+                endpoint.destination().rabbitQueueSettings().kind()
+                        == MqDestination.RabbitQueueKind.DELAY).count());
+    }
+
+    public void testMalformedSpecialArgumentsAreIsolatedAcrossFiveQueues() {
+        myFixture.configureByText("MalformedSpecialQueueCases.java", """
+                import java.util.Collections;
+                import java.util.Map;
+                class MalformedSpecialQueueCases {
+                    Object unknown() { return new Object(); }
+                    Map<String, Object> external() { return Collections.emptyMap(); }
+                    org.springframework.amqp.core.Queue first(String key) {
+                        return org.springframework.amqp.core.QueueBuilder.durable("first").withArgument(key, "x").build();
+                    }
+                    org.springframework.amqp.core.Queue second() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("second").withArguments(external()).build();
+                    }
+                    org.springframework.amqp.core.Queue third() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("third")
+                            .withArgument("x-dead-letter-exchange", unknown()).build();
+                    }
+                    org.springframework.amqp.core.Queue fourth() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("fourth")
+                            .withArgument("x-dead-letter-routing-key", unknown()).build();
+                    }
+                    org.springframework.amqp.core.Queue fifth() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("fifth")
+                            .withArgument("x-message-ttl", unknown()).build();
+                    }
+                }
+                """);
+
+        List<MqEndpoint> declarations = collectEndpoints().stream()
+                .filter(endpoint -> endpoint.role() == MqEndpoint.Role.DECLARATION)
+                .toList();
+
+        assertEquals(5, declarations.size());
+        assertTrue(declarations.stream().allMatch(endpoint -> !endpoint.destination().queue().isBlank()));
+    }
+
+    private MqEndpoint parseQueueDeclaration() {
+        return new RabbitMqEndpointParser(new MqValueResolver(getProject()))
+                .parseAnchor(identifier("durable"), new LinkedHashSet<>())
+                .orElseThrow();
+    }
+
+    private List<MqEndpoint> collectEndpoints() {
+        return new RabbitMqEndpointParser(new MqValueResolver(getProject()))
+                .collectEndpoints(getProject(), com.intellij.psi.search.GlobalSearchScope.projectScope(getProject()),
+                        new LinkedHashSet<>());
     }
 
     private PsiIdentifier identifier(String text) {

@@ -15,7 +15,9 @@ import com.intellij.openapi.util.TextRange;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.psi.PsiDocumentManager;
+import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiLiteralExpression;
+import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiMethodCallExpression;
 import com.intellij.psi.util.PsiTreeUtil;
 import com.intellij.testFramework.builders.JavaModuleFixtureBuilder;
@@ -23,7 +25,9 @@ import com.intellij.testFramework.fixtures.CodeInsightTestFixture;
 import com.intellij.testFramework.fixtures.IdeaProjectTestFixture;
 import com.intellij.testFramework.fixtures.JavaTestFixtureFactory;
 import com.intellij.testFramework.fixtures.TestFixtureBuilder;
+import com.intellij.ui.treeStructure.SimpleTree;
 import cn.luckyh.mqx.model.MqEndpoint;
+import cn.luckyh.mqx.ui.MqTopologyPanel;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -32,11 +36,19 @@ import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.awt.Component;
+import java.awt.Container;
+import javax.swing.JLabel;
+import javax.swing.tree.DefaultMutableTreeNode;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import static org.junit.Assert.assertEquals;
@@ -108,6 +120,230 @@ public class MqNavigationPerformanceTest {
                 ApplicationInfo.getInstance().getBuild().asString(), System.getProperty("java.runtime.version"),
                 System.getProperty("os.name"), Runtime.getRuntime().availableProcessors(),
                 Runtime.getRuntime().maxMemory());
+    }
+
+    @Test(timeout = 600_000)
+    public void sidebarVisibleRefreshMeetsP95Budget() throws Exception {
+        createSidebarSources();
+        DumbService.getInstance(fixture.getProject()).waitForSmartMode();
+        Future<SidebarPerformanceResult> future = ApplicationManager.getApplication().executeOnPooledThread(() ->
+                ProgressManager.getInstance().runProcess(this::measureSidebar, new EmptyProgressIndicator()));
+        SidebarPerformanceResult result = future.get();
+        assertEquals(MODULE_COUNT * ENDPOINTS_PER_MODULE, result.endpointCount());
+        assertEquals(40, result.samples().size());
+        assertTrue("sidebar refresh p95 ns=" + result.p95(), result.p95() < 3_000_000_000L);
+        System.out.printf(
+                "MQ_SIDEBAR_PERF modules=%d endpoints=%d refresh[n=%d p50=%d p95=%d max=%d] "
+                        + "firstSnapshot=%d firstTree=%d idea=%s jbr=%s os=%s%n",
+                MODULE_COUNT, result.endpointCount(), result.samples().size(),
+                percentile(result.samples(), 0.50), result.p95(), max(result.samples()),
+                result.firstSnapshotNanos(), result.firstTreeNanos(),
+                ApplicationInfo.getInstance().getBuild().asString(), System.getProperty("java.runtime.version"),
+                System.getProperty("os.name"));
+    }
+
+    private SidebarPerformanceResult measureSidebar() {
+        MqNavigationService service = MqNavigationService.getInstance(fixture.getProject());
+        long firstSnapshotStarted = System.nanoTime();
+        List<MqEndpoint> endpoints = read(service::currentEndpoints);
+        long firstSnapshot = System.nanoTime() - firstSnapshotStarted;
+        assertEquals(MODULE_COUNT * ENDPOINTS_PER_MODULE, endpoints.size());
+        assertTrue(endpoints.stream().allMatch(endpoint -> endpoint.system() == MqEndpoint.SystemType.RABBITMQ));
+        MqTopologyPanel panel = onEdt(() -> new MqTopologyPanel(fixture.getProject()));
+        long firstTreeStarted = System.nanoTime();
+        service.requestRefresh();
+        List<MqEndpoint> firstTreeEndpoints = read(service::currentEndpoints);
+        refreshSidebar(service, panel, firstTreeEndpoints, "baseline",
+                () -> treeMatches(panel, null, true));
+        long firstTree = System.nanoTime() - firstTreeStarted;
+        for (int sample = 0; sample < 3; sample++) {
+            measureSidebarMutation(service, panel, sidebarMutation(endpoints, sample), false);
+        }
+        List<Long> samples = new ArrayList<>(40);
+        for (int sample = 0; sample < 40; sample++) {
+            samples.add(measureSidebarMutation(service, panel, sidebarMutation(endpoints, sample), true));
+        }
+        return new SidebarPerformanceResult(endpoints.size(), firstSnapshot, firstTree,
+                samples, percentile(samples, 0.95));
+    }
+
+    private long measureSidebarMutation(
+            MqNavigationService service,
+            MqTopologyPanel panel,
+            SidebarMutation mutation,
+            boolean measured) {
+        changeSidebarSource(mutation, true);
+        long started = System.nanoTime();
+        service.requestRefresh();
+        List<MqEndpoint> appliedEndpoints = read(service::currentEndpoints);
+        refreshSidebar(service, panel, appliedEndpoints, mutation.operation() + " applied",
+                () -> treeMatches(panel, mutation, true));
+        long elapsed = System.nanoTime() - started;
+        changeSidebarSource(mutation, false);
+        service.requestRefresh();
+        List<MqEndpoint> restoredEndpoints = read(service::currentEndpoints);
+        refreshSidebar(service, panel, restoredEndpoints, mutation.operation() + " restored",
+                () -> treeMatches(panel, mutation, false));
+        return measured ? elapsed : 0L;
+    }
+
+    private void refreshSidebar(
+            MqNavigationService service,
+            MqTopologyPanel panel,
+            List<MqEndpoint> requestedEndpoints,
+            String expectation,
+            BooleanSupplier treeCondition) {
+        onEdt(() -> {
+            panel.refresh();
+            return null;
+        });
+        long deadline = System.nanoTime() + 30_000_000_000L;
+        while (!treeCondition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline) {
+                String treeState = onEdt(() -> {
+                    SimpleTree tree = findComponent(panel, SimpleTree.class);
+                    JLabel status = findComponent(panel, JLabel.class);
+                    DefaultMutableTreeNode root = (DefaultMutableTreeNode) tree.getModel().getRoot();
+                    List<String> modules = new ArrayList<>();
+                    for (int index = 0; index < root.getChildCount(); index++) {
+                        modules.add(renderedLabel(tree, (DefaultMutableTreeNode) root.getChildAt(index)));
+                    }
+                    return renderedLabel(tree, root) + " status=" + (status == null ? null : status.getText())
+                            + " modules=" + modules;
+                });
+                throw new AssertionError("Timed out waiting for RabbitMQ sidebar refresh " + expectation
+                        + ": requested="
+                        + requestedEndpoints.size() + " service=" + read(service::currentEndpoints).size()
+                        + " " + treeState);
+            }
+            LockSupport.parkNanos(10_000_000L);
+        }
+    }
+
+    private SidebarMutation sidebarMutation(List<MqEndpoint> endpoints, int sample) {
+        int module = sample % MODULE_COUNT;
+        String className = "SidebarProducer" + module;
+        String moduleName = endpoints.stream().filter(endpoint -> className.equals(endpoint.className()))
+                .findFirst().orElseThrow().moduleName();
+        String file = String.format("perf-module-%02d/src/main/java/perf/m%d/%s.java",
+                module, module, className);
+        return switch (sample % 3) {
+            case 0 -> new SidebarMutation(SidebarOperation.ADD, file, moduleName,
+                    "void send17() { template.convertAndSend(\"rabbit-" + module
+                            + "-p-17\", new Object()); }",
+                    "void send17() { String key = System.nanoTime() > 0 ? \"rabbit-" + module
+                            + "-p-17\" : \"added-" + module
+                            + "\"; template.convertAndSend(key, new Object()); }",
+                    "key=added-" + module, null);
+            case 1 -> new SidebarMutation(SidebarOperation.MODIFY, file, moduleName,
+                    "\"rabbit-" + module + "-p-0\"", "\"rabbit-" + module + "-p-0-updated\"",
+                    "key=rabbit-" + module + "-p-0-updated", "key=rabbit-" + module + "-p-0");
+            default -> new SidebarMutation(SidebarOperation.DELETE, file, moduleName,
+                    "void send18() { String key = System.nanoTime() > 0 ? \"rabbit-" + module
+                            + "-p-18\" : \"deleted-" + module
+                            + "\"; template.convertAndSend(key, new Object()); }",
+                    "void send18() { template.convertAndSend(\"rabbit-" + module
+                            + "-p-18\", new Object()); }", null, "key=deleted-" + module);
+        };
+    }
+
+    private void changeSidebarSource(SidebarMutation mutation, boolean apply) {
+        Document document = read(() -> {
+            var file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(
+                    projectDirectory.resolve(mutation.relativePath()));
+            PsiFile psiFile = file == null ? null : PsiManager.getInstance(fixture.getProject()).findFile(file);
+            return psiFile == null ? null : PsiDocumentManager.getInstance(fixture.getProject()).getDocument(psiFile);
+        });
+        assertNotNull(document);
+        String from = apply ? mutation.baselineText() : mutation.changedText();
+        String to = apply ? mutation.changedText() : mutation.baselineText();
+        onEdt(() -> {
+            WriteCommandAction.runWriteCommandAction(fixture.getProject(), () -> {
+                int offset = document.getText().indexOf(from);
+                assertTrue("Missing source text: " + from, offset >= 0);
+                document.replaceString(offset, offset + from.length(), to);
+                PsiDocumentManager.getInstance(fixture.getProject()).commitDocument(document);
+            });
+            return null;
+        });
+    }
+
+    private boolean treeMatches(MqTopologyPanel panel, SidebarMutation mutation, boolean applied) {
+        return onEdt(() -> {
+            SimpleTree tree = findComponent(panel, SimpleTree.class);
+            DefaultMutableTreeNode root = (DefaultMutableTreeNode) tree.getModel().getRoot();
+            int total = MODULE_COUNT * ENDPOINTS_PER_MODULE;
+            int moduleCount = ENDPOINTS_PER_MODULE;
+            if (mutation != null && applied) {
+                total += mutation.operation().delta;
+                moduleCount += mutation.operation().delta;
+            }
+            if (!renderedLabel(tree, root).equals("RabbitMQ (" + total + ")")) {
+                return false;
+            }
+            if (mutation == null) {
+                return root.getChildCount() == MODULE_COUNT;
+            }
+            DefaultMutableTreeNode moduleNode = null;
+            for (int index = 0; index < root.getChildCount(); index++) {
+                DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(index);
+                if (renderedLabel(tree, child).startsWith(mutation.moduleName() + " (")) {
+                    moduleNode = child;
+                    break;
+                }
+            }
+            if (moduleNode == null) {
+                return false;
+            }
+            List<String> labels = renderedLabels(tree, moduleNode);
+            if (!labels.contains(mutation.moduleName() + " (" + moduleCount + ")")) {
+                return false;
+            }
+            boolean currentPresent = mutation.currentIndicator() != null
+                    && labels.stream().anyMatch(label -> label.endsWith(mutation.currentIndicator()));
+            boolean baselinePresent = mutation.baselineIndicator() != null
+                    && labels.stream().anyMatch(label -> label.endsWith(mutation.baselineIndicator()));
+            return mutation.matches(applied, currentPresent, baselinePresent);
+        });
+    }
+
+    private List<String> renderedLabels(SimpleTree tree, DefaultMutableTreeNode root) {
+        List<String> labels = new ArrayList<>();
+        Enumeration<?> nodes = root.depthFirstEnumeration();
+        while (nodes.hasMoreElements()) {
+            labels.add(renderedLabel(tree, (DefaultMutableTreeNode) nodes.nextElement()));
+        }
+        return labels;
+    }
+
+    private String renderedLabel(SimpleTree tree, DefaultMutableTreeNode node) {
+        Component component = tree.getCellRenderer().getTreeCellRendererComponent(
+                tree, node, false, false, node.isLeaf(), 0, false);
+        return ((JLabel) component).getText();
+    }
+
+    private <T extends Component> T findComponent(Container container, Class<T> componentType) {
+        for (Component component : container.getComponents()) {
+            if (componentType.isInstance(component)) {
+                return componentType.cast(component);
+            }
+            if (component instanceof Container childContainer) {
+                T child = findComponent(childContainer, componentType);
+                if (child != null) {
+                    return child;
+                }
+            }
+        }
+        return null;
+    }
+
+    private <T> T onEdt(Supplier<T> supplier) {
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            return supplier.get();
+        }
+        AtomicReference<T> result = new AtomicReference<>();
+        ApplicationManager.getApplication().invokeAndWait(() -> result.set(supplier.get()));
+        return result.get();
     }
 
     private PerformanceResult measure() {
@@ -271,6 +507,45 @@ public class MqNavigationPerformanceTest {
         }
     }
 
+    private void createSidebarSources() throws Exception {
+        Path stubs = Path.of("src/test/testData/stubs").toAbsolutePath();
+        try (var stream = Files.walk(stubs)) {
+            for (Path file : stream.filter(Files::isRegularFile).toList()) {
+                String relative = stubs.relativize(file).toString().replace('\\', '/');
+                writeProjectFile("perf-module-00/src/main/java/" + relative, Files.readString(file));
+            }
+        }
+        for (int module = 0; module < MODULE_COUNT; module++) {
+            String root = String.format("perf-module-%02d/src/main/java/perf/m%d/", module, module);
+            StringBuilder producerMethods = new StringBuilder();
+            StringBuilder consumerMethods = new StringBuilder();
+            for (int index = 0; index < 18; index++) {
+                producerMethods.append("  void send").append(index)
+                        .append("() { template.convertAndSend(\"rabbit-").append(module).append("-p-")
+                        .append(index).append("\", new Object()); }\n");
+            }
+            producerMethods.append("  void send18() { String key = System.nanoTime() > 0 ? \"rabbit-")
+                    .append(module).append("-p-18\" : \"deleted-").append(module)
+                    .append("\"; template.convertAndSend(key, new Object()); }\n");
+            for (int index = 0; index < 20; index++) {
+                consumerMethods.append("  @org.springframework.amqp.rabbit.annotation.RabbitListener(queues=\"rabbit-")
+                        .append(module).append("-c-").append(index).append("\")\n  void receive")
+                        .append(index).append("(Object value) {}\n");
+            }
+            writeProjectFile(root + "SidebarProducer" + module + ".java",
+                    "package perf.m" + module + "; class SidebarProducer" + module
+                            + " { org.springframework.amqp.rabbit.core.RabbitTemplate template;\n"
+                            + producerMethods + "}\n");
+            writeProjectFile(root + "SidebarConsumer" + module + ".java",
+                    "package perf.m" + module + "; class SidebarConsumer" + module + " {\n"
+                            + consumerMethods + "}\n");
+        }
+        var projectRoot = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(projectDirectory);
+        if (projectRoot != null) {
+            VfsUtil.markDirtyAndRefresh(false, true, true, projectRoot);
+        }
+    }
+
     private void writeProjectFile(String relativePath, String content) throws Exception {
         Path target = projectDirectory.resolve(relativePath);
         Files.createDirectories(target.getParent());
@@ -366,5 +641,43 @@ public class MqNavigationPerformanceTest {
     }
 
     private record DestinationChange(String oldValue, String newValue) {
+    }
+
+    private record SidebarPerformanceResult(
+            int endpointCount,
+            long firstSnapshotNanos,
+            long firstTreeNanos,
+            List<Long> samples,
+            long p95) {
+    }
+
+    private record SidebarMutation(
+            SidebarOperation operation,
+            String relativePath,
+            String moduleName,
+            String baselineText,
+            String changedText,
+            String currentIndicator,
+            String baselineIndicator) {
+
+        private boolean matches(boolean applied, boolean currentPresent, boolean baselinePresent) {
+            return switch (operation) {
+                case ADD -> applied == currentPresent;
+                case MODIFY -> applied ? currentPresent && !baselinePresent : !currentPresent && baselinePresent;
+                case DELETE -> applied != baselinePresent;
+            };
+        }
+    }
+
+    private enum SidebarOperation {
+        ADD(1),
+        MODIFY(0),
+        DELETE(-1);
+
+        private final int delta;
+
+        SidebarOperation(int delta) {
+            this.delta = delta;
+        }
     }
 }
