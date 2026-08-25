@@ -19,7 +19,7 @@
         <toolWindow id="MQ Navigator"
                     factoryClass="cn.luckyh.mqx.ui.MqToolWindowFactory"
                     anchor="right"
-                    icon="/icons/mq-navigator-plugin-logo.svg"/>
+                    icon="/icons/rabbitmq-seeklogo.svg"/>
         <notificationGroup id="MQ Navigator" displayType="BALLOON"/>
     </extensions>
 
