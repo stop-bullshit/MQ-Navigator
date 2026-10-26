@@ -25,7 +25,7 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - run: .\gradlew.bat test --no-daemon
+      - run: .\gradlew.bat test verifyPluginProjectConfiguration verifyPluginStructure buildPlugin --no-daemon
 
   package:
     name: Validate and package

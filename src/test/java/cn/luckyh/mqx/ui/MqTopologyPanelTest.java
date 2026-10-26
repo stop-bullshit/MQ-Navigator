@@ -675,10 +675,7 @@ public class MqTopologyPanelTest extends BasePlatformTestCase {
         String label = "NavigationTarget#publish — exchange=events, key=navigation-key [dynamic]";
 
         for (int iteration = 0; iteration < 20; iteration++) {
-            long startedAt = System.nanoTime();
             assertNavigatesTo(tree, label, targetFile);
-            assertTrue("ordinary navigation ns=" + (System.nanoTime() - startedAt),
-                    System.nanoTime() - startedAt < 1_000_000_000L);
         }
         setSearch(panel, "navigation-key");
         assertNavigatesTo(tree, label, targetFile);
@@ -926,7 +923,7 @@ public class MqTopologyPanelTest extends BasePlatformTestCase {
     }
 
     private void assertNavigatesTo(SimpleTree tree, String endpointLabel, PsiFile targetFile) {
-        long startedAt = System.nanoTime();
+        // 此处只验证实际打开目标，后台导航延迟由独立的 P95 性能用例检查。
         DefaultMutableTreeNode endpointNode = findNode(tree, endpointLabel);
         assertNotNull(endpointNode);
         onEdt(() -> {
@@ -937,8 +934,6 @@ public class MqTopologyPanelTest extends BasePlatformTestCase {
         waitFor("source navigation", () -> onEdt(() ->
                 List.of(FileEditorManager.getInstance(getProject()).getSelectedFiles())
                         .contains(targetFile.getVirtualFile())));
-        assertTrue("navigation ns=" + (System.nanoTime() - startedAt),
-                System.nanoTime() - startedAt < 1_000_000_000L);
     }
 
     private void doubleClick(SimpleTree tree, DefaultMutableTreeNode endpointNode) {
