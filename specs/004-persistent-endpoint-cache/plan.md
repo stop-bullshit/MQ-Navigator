@@ -35,9 +35,9 @@
 | Principle | Pre-Research | Post-Design | Evidence |
 |-----------|--------------|-------------|----------|
 | I. 最小范围与直接实现 | PASS | PASS | 生产仅修改 `MqNavigationService`；不新增顶层生产类、Manager、Handler、接口或转发层 |
-| II. 平台优先与证据驱动的复杂度 | PASS | PASS | 使用平台项目级系统缓存和现有 `CachedValue`；持久状态只作为首次计算种子，不形成第二套运行时缓存，不复制 InterfaceX 的 SQLite/后台任务体系 |
+| II. 平台优先与证据驱动的复杂度 | PASS | PASS | 使用平台项目级系统缓存和现有 `CachedValue`；持久状态只作为首次计算种子，不形成第二套运行时缓存，不复制 参考插件 的 SQLite/后台任务体系 |
 | III. PSI、索引与并发安全 | PASS | PASS | 长期状态只保存源码 URL 与偏移；恢复后重新创建 `SmartPsiElementPointer`；读取继续由现有 smart read action 驱动，无自定义线程或锁 |
-| IV. 用户项目只读与运行时隔离 | PASS | PASS | `$CACHE_FILE$` 位于 IDE system path；不写项目或连接 broker；`D:\github\interfacex` 全程只读 |
+| IV. 用户项目只读与运行时隔离 | PASS | PASS | `$CACHE_FILE$` 位于 IDE system path；不写项目或连接 broker；`<reference-project>` 全程只读 |
 | V. 测试先行与量化证据 | PASS | PASS | 先新增缓存命中、空缓存、损坏回退、手动刷新、版本和 2,000 endpoint p95 测试，再修改服务；保留 heavy、全量、隔离和 Verifier 门禁 |
 | VI. 可追踪的增量交付 | PASS | PASS | US1–US3、FR-001–FR-017、SC-001–SC-007 映射到缓存状态机、内部行为文档和后续任务 |
 
@@ -158,7 +158,7 @@ src/test/java/cn/luckyh/mqx/navigation/
 - 不修改 `MqEndpoint`、`MqDestination`、所有 parser、`MqEndpointMatcher`、`RefreshMqIndexAction`、`MqToolWindowService`、`MqTopologyPanel` 和进度状态。
 - 不修改 `MqNavigationService` 的匹配、角色优先级、源码范围判断、排序比较器和现有缓存依赖。
 - 不修改 `MqNavigationPerformanceTest`、`MqBrokerIsolationTest`、`plugin.xml`、依赖或插件版本。
-- 不修改 `D:\github\interfacex`、`D:\github\feignx-plugin` 或用户项目 fixture 原件。
+- 不修改 `<reference-project>`、`<reference-plugin>` 或用户项目 fixture 原件。
 - 不连接 broker，不执行用户业务代码，不创建自定义缓存文件或数据库。
 
 ## Risks and Controls

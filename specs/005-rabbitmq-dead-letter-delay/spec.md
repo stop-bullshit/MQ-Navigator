@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "`com.dhl.base.config.mq.visualize.GenerateClearanceStatusMqConfiguration#broadcastWriteOffQueue` 建议增加这种死信队列以及延迟队列的支持"
+**Input**: User description: "`org.example.base.config.mq.visualize.OrderStatusQueueConfiguration#delayedOrderQueue` 建议增加这种死信队列以及延迟队列的支持"
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -31,7 +31,7 @@
 
 开发人员查看同时配置队列存活时间和死信交换机的 RabbitMQ 队列时，可以明确识别这是基于消息过期转发的延迟队列，并看到延迟时长及延迟结束后的消息去向。
 
-**Why this priority**: 用户指定的 `broadcastWriteOffQueue` 同时使用队列存活时间和死信交换机；只有组合展示延迟时长与后续路由，才能准确表达该队列的实际用途。
+**Why this priority**: 用户指定的 `delayedOrderQueue` 同时使用队列存活时间和死信交换机；只有组合展示延迟时长与后续路由，才能准确表达该队列的实际用途。
 
 **Independent Test**: 在只读样例项目中声明一个静态存活时间、死信交换机和可选死信路由键的队列，验证该队列被标识为延迟队列、延迟时长正确、后续死信路径可追踪，且不依赖真实 RabbitMQ。
 
@@ -103,7 +103,7 @@
 **In Scope**:
 
 - 当前项目源码中通过队列参数表达的 RabbitMQ 死信交换机、可选死信路由键和队列存活时间。
-- 用户示例 `GenerateClearanceStatusMqConfiguration#broadcastWriteOffQueue` 所采用的参数集合声明形式。
+- 用户示例 `OrderStatusQueueConfiguration#delayedOrderQueue` 所采用的参数集合声明形式。
 - 等价的单参数声明形式，以及可静态追踪的字面量、常量、局部变量和参数集合赋值。
 - 基于队列存活时间与死信转发组合形成的延迟队列。
 - 源队列、死信交换机、绑定和目标队列之间的静态关系展示与源码导航。

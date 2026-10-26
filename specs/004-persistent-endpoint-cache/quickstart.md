@@ -4,11 +4,11 @@
 
 - Windows PowerShell
 - JDK 17
-- Working directory: `D:\github\mqx-plugin`
+- Working directory: `<workspace>`
 - Current feature: `specs/004-persistent-endpoint-cache`
 
 ```powershell
-Set-Location 'D:\github\mqx-plugin'
+Set-Location '<workspace>'
 java -version
 Get-Content '.specify\feature.json'
 git status --short

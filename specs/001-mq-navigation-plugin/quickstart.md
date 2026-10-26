@@ -8,7 +8,7 @@
 - JDK 17 用作 Gradle JVM
 - IntelliJ IDEA 2023.3 或更高版本
 - 首次构建可访问 Gradle、JetBrains 和 Maven Central 依赖仓库
-- 工作目录：`D:\github\mqx-plugin`
+- 工作目录：`<workspace>`
 
 确认 Java：
 
@@ -23,7 +23,7 @@ java -version
 ### 2.1 Functional tests
 
 ```powershell
-Set-Location 'D:\github\mqx-plugin'
+Set-Location '<workspace>'
 .\gradlew.bat clean test
 ```
 

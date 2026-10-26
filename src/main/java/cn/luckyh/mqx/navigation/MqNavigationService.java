@@ -45,7 +45,8 @@ import java.util.Set;
 @State(name = "MqNavigationEndpointCache", storages = @Storage(StoragePathMacros.CACHE_FILE))
 public final class MqNavigationService implements PersistentStateComponent<MqNavigationService.CacheState> {
 
-    private static final int CACHE_VERSION = 2;
+    // 逻辑变动: 升级发送封装解析后重建旧端点缓存-20261023-1125-01
+    private static final int CACHE_VERSION = 3;
     private static final Logger LOG = Logger.getInstance(MqNavigationService.class);
     private static final Comparator<MqEndpoint> ENDPOINT_ORDER = Comparator
             .comparing(MqEndpoint::moduleName)
@@ -169,9 +170,9 @@ public final class MqNavigationService implements PersistentStateComponent<MqNav
         } else {
             status = NavigationStatus.NO_MATCH;
             message = switch (sourceRole) {
-                case PRODUCER -> "No matching MQ consumer or queue declaration was found in the current project";
-                case CONSUMER -> "No matching MQ producer or queue declaration was found in the current project";
-                case DECLARATION -> "No matching MQ producer or consumer was found in the current project";
+                case PRODUCER -> "No matching MQ consumer was found in the current project";
+                case CONSUMER -> "No matching MQ producer was found in the current project";
+                case DECLARATION -> "Queue declarations are available in the MQ topology view";
                 case BINDING -> "No matching MQ producer was found for this binding in the current project";
                 case EXCHANGE_DECLARATION -> "No matching MQ binding was found for this exchange in the current project";
             };

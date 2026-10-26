@@ -13,7 +13,7 @@
 
 ## Failure Evidence
 
-- Log: `C:\Users\Master\AppData\Local\JetBrains\IntelliJIdea2026.2\log\idea.log`
+- Log: `<IDE log>/idea.log`
 - Time: 2026-08-25 10:43:48
 - Thread: `AWT-EventQueue-0`
 - Platform path: `LeafPsiElement.navigate` → `getContainingFile` without read access.

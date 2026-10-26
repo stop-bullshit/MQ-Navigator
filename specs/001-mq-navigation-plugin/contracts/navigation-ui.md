@@ -12,6 +12,7 @@
 | RocketMQ listener class | 类名 `PsiIdentifier` | “查找消息发送端” |
 
 - 一个源码锚点只显示一个 MQ Navigator marker。
+- `QueueBuilder.durable(...)` 队列声明是拓扑配置，仅保留在侧栏 Topology，不显示收发端 gutter，也不作为 producer/consumer 的跳转目标。
 - producer 和 consumer 使用不同图标或清晰 tooltip 区分方向。
 - marker 只挂最小叶子元素，不能挂整段注解、方法或类。
 - marker 只保存 project、源锚点智能指针和查询键，不保存创建 marker 时的目标列表；同一个仍可见 marker 每次点击必须查询当前快照。

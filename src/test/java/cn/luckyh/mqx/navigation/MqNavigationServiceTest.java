@@ -123,36 +123,130 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
         assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, future.get().status());
     }
 
-    public void testRabbitQueueDeclarationAndListenerNavigateBothDirections() throws Exception {
-        myFixture.addFileToProject("com/dhl/common/constant/CdtcDockingQueueConstants.java", """
-                package com.dhl.common.constant;
-                public class CdtcDockingQueueConstants {
-                    public static final String ACCOMPANYING_DOCUMENTS_QUEUE = "cdtc.ib.documents";
+    public void testRabbitQueueDeclarationIsNotAConsumerNavigationTarget() throws Exception {
+        myFixture.addFileToProject("org/example/common/constant/DocumentQueueConstants.java", """
+                package org.example.common.constant;
+                public class DocumentQueueConstants {
+                    public static final String DOCUMENTS_QUEUE = "documents.queue";
                 }
                 """);
-        myFixture.configureByText("CdtcQueueMqConfiguration.java", """
-                import com.dhl.common.constant.CdtcDockingQueueConstants;
-                class CdtcQueueMqConfiguration {
+        myFixture.configureByText("DocumentQueueConfiguration.java", """
+                import org.example.common.constant.DocumentQueueConstants;
+                class DocumentQueueConfiguration {
                     org.springframework.amqp.core.Queue declareDocumentsQueue() {
                         return org.springframework.amqp.core.QueueBuilder.durable(
-                            CdtcDockingQueueConstants.ACCOMPANYING_DOCUMENTS_QUEUE).quorum().build();
+                            DocumentQueueConstants.DOCUMENTS_QUEUE).quorum().build();
                     }
 
                     @org.springframework.amqp.rabbit.annotation.RabbitListener(
-                        queues = CdtcDockingQueueConstants.ACCOMPANYING_DOCUMENTS_QUEUE)
+                        queues = DocumentQueueConstants.DOCUMENTS_QUEUE)
                     void consumeDocuments(Object value) {}
                 }
                 """);
         MqNavigationService service = MqNavigationService.getInstance(getProject());
 
         MqNavigationService.NavigationOutcome fromDeclaration = findTargets(service, identifier("durable"));
-        assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, fromDeclaration.status());
-        assertEquals("consumeDocuments", fromDeclaration.targets().get(0).memberName());
+        assertEquals(MqNavigationService.NavigationStatus.NO_MATCH, fromDeclaration.status());
 
         MqNavigationService.NavigationOutcome fromListener = findTargets(service, identifier("consumeDocuments"));
-        assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, fromListener.status());
-        assertEquals(MqEndpoint.Role.DECLARATION, fromListener.targets().get(0).role());
-        assertEquals("declareDocumentsQueue", fromListener.targets().get(0).memberName());
+        assertEquals(MqNavigationService.NavigationStatus.NO_MATCH, fromListener.status());
+        assertTrue(service.currentEndpoints().stream().anyMatch(endpoint ->
+                endpoint.role() == MqEndpoint.Role.DECLARATION
+                        && "documents.queue".equals(endpoint.destination().queue())));
+    }
+
+    public void testProducerDoesNotNavigateToQueueDeclarationWithoutConsumer() throws Exception {
+        myFixture.configureByText("QueueOnlyCase.java", """
+                class QueueOnlyCase {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    org.springframework.amqp.core.Queue queue() {
+                        return org.springframework.amqp.core.QueueBuilder.durable("queue.only").build();
+                    }
+                    void publish() { template.convertAndSend("queue.only", new Object()); }
+                }
+                """);
+        MqNavigationService service = MqNavigationService.getInstance(getProject());
+
+        MqNavigationService.NavigationOutcome outcome = findTargets(service, identifier("convertAndSend"));
+
+        assertEquals(MqNavigationService.NavigationStatus.NO_MATCH, outcome.status());
+        assertTrue(service.currentEndpoints().stream().anyMatch(endpoint ->
+                endpoint.role() == MqEndpoint.Role.DECLARATION
+                        && "queue.only".equals(endpoint.destination().queue())));
+    }
+
+    public void testTopicBindingConnectsBillingConsumerToActualProducer() throws Exception {
+        myFixture.configureByText("BillingNavigationCase.java", """
+                class BillingQueueConfiguration {
+                    org.springframework.amqp.core.Queue billingInitQueue() {
+                        return org.springframework.amqp.core.QueueBuilder.durable(
+                            "billing.init.queue").quorum().build();
+                    }
+                }
+                class BillingExchangeConfiguration {
+                    org.springframework.amqp.core.Exchange billingExchange() {
+                        return org.springframework.amqp.core.ExchangeBuilder
+                            .topicExchange("billing.events").durable(true).build();
+                    }
+                }
+                class BillingBindingConfiguration {
+                    BillingQueueConfiguration queues;
+                    BillingExchangeConfiguration exchanges;
+                    void billingInitBinding() {
+                        org.springframework.amqp.core.BindingBuilder
+                            .bind(queues.billingInitQueue())
+                            .to(exchanges.billingExchange()).with("#.init");
+                    }
+                }
+                class MessagePublisher {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    void publishMessage(String exchange, String routingKey, Object message) {
+                        template.convertAndSend(exchange, routingKey, message);
+                    }
+                }
+                class BillingPublishAspect {
+                    MessagePublisher template;
+                    void publishBilling(boolean direct) {
+                        String exchange = "billing.events";
+                        String routingKey = "calc.billing.init";
+                        if (direct) {
+                            template.publishMessage(exchange, routingKey, new Object());
+                            return;
+                        }
+                        template.publishMessage(exchange, routingKey, new Object());
+                    }
+                }
+                class BillingListener {
+                    @org.springframework.amqp.rabbit.annotation.RabbitListener(
+                        queues = "billing.init.queue")
+                    void processData(Object message) {}
+                }
+                """);
+        MqNavigationService service = MqNavigationService.getInstance(getProject());
+        PsiIdentifier producer = com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(
+                        myFixture.getFile(), PsiIdentifier.class).stream()
+                .filter(identifier -> "publishMessage".equals(identifier.getText()))
+                .filter(identifier -> identifier.getParent() instanceof com.intellij.psi.PsiReferenceExpression)
+                .filter(identifier -> {
+                    var method = com.intellij.psi.util.PsiTreeUtil.getParentOfType(
+                            identifier, com.intellij.psi.PsiMethod.class);
+                    return method != null && "publishBilling".equals(method.getName());
+                })
+                .findFirst().orElseThrow();
+
+        MqNavigationService.NavigationOutcome fromConsumer = findTargets(service, identifier("processData"));
+        MqNavigationService.NavigationOutcome fromProducer = findTargets(service, producer);
+
+        assertEquals(MqNavigationService.NavigationStatus.MULTIPLE_MATCHES, fromConsumer.status());
+        assertEquals(2, fromConsumer.targets().size());
+        assertTrue(fromConsumer.targets().stream().allMatch(endpoint ->
+                endpoint.role() == MqEndpoint.Role.PRODUCER
+                        && "publishBilling".equals(endpoint.memberName())));
+        assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, fromProducer.status());
+        assertEquals("processData", fromProducer.targets().get(0).memberName());
+        assertTrue(service.currentEndpoints().stream().anyMatch(endpoint ->
+                endpoint.role() == MqEndpoint.Role.BINDING
+                        && "#.init".equals(endpoint.destination().bindingKeys().get(0))));
     }
 
     public void testRabbitProducerPrefersListenerOverQueueDeclaration() throws Exception {
@@ -178,8 +272,8 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
     }
 
     public void testRabbitQueueBindingNavigatesToGenericExchangeProducer() throws Exception {
-        myFixture.addFileToProject("com/dhl/mq/MqConstants.java", """
-                package com.dhl.mq;
+        myFixture.addFileToProject("org/example/mq/MqConstants.java", """
+                package org.example.mq;
                 public class MqConstants {
                     public static final String QUEUE = "orders.queue";
                     public static final String EXCHANGE = "orders.exchange";
@@ -187,7 +281,7 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
                 """);
         myFixture.configureByText("RabbitTopologyCase.java", """
                 import org.example.messaging.MessagePublisher;
-                import com.dhl.mq.MqConstants;
+                import org.example.mq.MqConstants;
                 class RabbitTopologyCase {
                     org.springframework.amqp.rabbit.core.RabbitAdmin admin;
                     MessagePublisher publisher;
@@ -224,8 +318,8 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
     }
 
     public void testRabbitQueueKeepsMultipleBindings() throws Exception {
-        myFixture.addFileToProject("com/dhl/mq/MultiBindingConstants.java", """
-                package com.dhl.mq;
+        myFixture.addFileToProject("org/example/mq/MultiBindingConstants.java", """
+                package org.example.mq;
                 public class MultiBindingConstants {
                     public static final String QUEUE = "shared.queue";
                     public static final String FIRST = "first.exchange";
@@ -234,7 +328,7 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
                 """);
         myFixture.configureByText("RabbitMultipleBindingCase.java", """
                 import org.example.messaging.MessagePublisher;
-                import com.dhl.mq.MultiBindingConstants;
+                import org.example.mq.MultiBindingConstants;
                 class RabbitMultipleBindingCase {
                     org.springframework.amqp.rabbit.core.RabbitAdmin admin;
                     MessagePublisher publisher;
@@ -273,8 +367,8 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
     }
 
     public void testRabbitTopicBindingUsesRoutingKeyAndExchangeBuilder() throws Exception {
-        myFixture.addFileToProject("com/dhl/mq/TopicConstants.java", """
-                package com.dhl.mq;
+        myFixture.addFileToProject("org/example/mq/TopicConstants.java", """
+                package org.example.mq;
                 public class TopicConstants {
                     public static final String QUEUE = "topic.queue";
                     public static final String EXCHANGE = "topic.exchange";
@@ -283,7 +377,7 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
                 """);
         myFixture.configureByText("RabbitTopicTopologyCase.java", """
                 import org.example.messaging.MessagePublisher;
-                import com.dhl.mq.TopicConstants;
+                import org.example.mq.TopicConstants;
                 class RabbitTopicTopologyCase {
                     org.springframework.amqp.rabbit.core.RabbitAdmin admin;
                     MessagePublisher publisher;
@@ -318,65 +412,65 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
     }
 
     public void testRabbitListenerFindsProducerThroughEnumRoutingKeyGetter() throws Exception {
-        myFixture.addFileToProject("com/dhl/mq/CheckPointConstants.java", """
-                package com.dhl.mq;
-                public class CheckPointConstants {
-                    public static final String QUEUE = "checkpoint.ib.hi.clearance-base";
-                    public static final String EXCHANGE = "data.center.in.ib.checkpoint";
+        myFixture.addFileToProject("org/example/mq/OrderEventConstants.java", """
+                package org.example.mq;
+                public class OrderEventConstants {
+                    public static final String QUEUE = "orders.created.queue";
+                    public static final String EXCHANGE = "orders.events";
                 }
                 """);
-        myFixture.addFileToProject("com/dhl/mq/CheckPointRoutingKey.java", """
-                package com.dhl.mq;
-                public enum CheckPointRoutingKey {
-                    CHECKPOINT_IB_HI("checkpoint.ib.hi", "HI");
+        myFixture.addFileToProject("org/example/mq/OrderRoutingKey.java", """
+                package org.example.mq;
+                public enum OrderRoutingKey {
+                    ORDER_CREATED("orders.created", "HI");
                     private final String code;
                     private final String description;
-                    CheckPointRoutingKey(String code, String description) {
+                    OrderRoutingKey(String code, String description) {
                         this.code = code;
                         this.description = description;
                     }
                     public String getCode() { return code; }
                 }
                 """);
-        myFixture.addFileToProject("com/dhl/mq/RabbitTemplateUtil.java", """
-                package com.dhl.mq;
-                public class RabbitTemplateUtil {
+        myFixture.addFileToProject("org/example/mq/MessagePublisher.java", """
+                package org.example.mq;
+                public class MessagePublisher {
                     org.springframework.amqp.rabbit.core.RabbitTemplate template;
-                    public void clearanceConvertAndSend(String exchange, String routingKey, Object message) {
+                    public void publishMessage(String exchange, String routingKey, Object message) {
                         template.convertAndSend(exchange, routingKey, message);
                     }
                 }
                 """);
-        myFixture.addFileToProject("CheckPointTopology.java", """
-                import com.dhl.mq.CheckPointConstants;
-                import com.dhl.mq.CheckPointRoutingKey;
-                class CheckPointTopology {
+        myFixture.addFileToProject("OrderEventTopology.java", """
+                import org.example.mq.OrderEventConstants;
+                import org.example.mq.OrderRoutingKey;
+                class OrderEventTopology {
                     org.springframework.amqp.core.Queue queue() {
-                        return org.springframework.amqp.core.QueueBuilder.durable(CheckPointConstants.QUEUE).build();
+                        return org.springframework.amqp.core.QueueBuilder.durable(OrderEventConstants.QUEUE).build();
                     }
                     org.springframework.amqp.core.TopicExchange exchange() {
                         return org.springframework.amqp.core.ExchangeBuilder
-                            .topicExchange(CheckPointConstants.EXCHANGE).durable(true).build();
+                            .topicExchange(OrderEventConstants.EXCHANGE).durable(true).build();
                     }
                     void binding() {
                         org.springframework.amqp.core.BindingBuilder.bind(queue())
-                            .to(exchange()).with(CheckPointRoutingKey.CHECKPOINT_IB_HI.getCode());
+                            .to(exchange()).with(OrderRoutingKey.ORDER_CREATED.getCode());
                     }
                 }
                 """);
-        myFixture.configureByText("CheckPointNavigationCase.java", """
-                import com.dhl.mq.CheckPointConstants;
-                import com.dhl.mq.CheckPointRoutingKey;
-                import com.dhl.mq.RabbitTemplateUtil;
-                class CheckPointNavigationCase {
-                    RabbitTemplateUtil templateUtil;
+        myFixture.configureByText("OrderEventNavigationCase.java", """
+                import org.example.mq.OrderEventConstants;
+                import org.example.mq.OrderRoutingKey;
+                import org.example.mq.MessagePublisher;
+                class OrderEventNavigationCase {
+                    MessagePublisher templateUtil;
                     void publish() {
-                        templateUtil.clearanceConvertAndSend(
-                            CheckPointConstants.EXCHANGE,
-                            CheckPointRoutingKey.CHECKPOINT_IB_HI.getCode(),
+                        templateUtil.publishMessage(
+                            OrderEventConstants.EXCHANGE,
+                            OrderRoutingKey.ORDER_CREATED.getCode(),
                             new Object());
                     }
-                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = CheckPointConstants.QUEUE)
+                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = OrderEventConstants.QUEUE)
                     void consume(Object value) {}
                 }
                 """);
@@ -386,58 +480,58 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
 
         assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, outcome.status());
         assertEquals("publish", outcome.targets().get(0).memberName());
-        assertEquals("checkpoint.ib.hi", outcome.targets().get(0).destination().routingKey());
+        assertEquals("orders.created", outcome.targets().get(0).destination().routingKey());
     }
 
     public void testRabbitTopologyAcrossQueueExchangeAndBindingConfigurations() throws Exception {
-        myFixture.addFileToProject("com/dhl/mq/CdtcConstants.java", """
-                package com.dhl.mq;
-                public class CdtcConstants {
-                    public static final String QUEUE = "cdtc.queue";
-                    public static final String EXCHANGE = "cdtc.exchange";
-                    public static final String ROUTING_KEY = "cdtc.route";
+        myFixture.addFileToProject("org/example/mq/DocumentConstants.java", """
+                package org.example.mq;
+                public class DocumentConstants {
+                    public static final String QUEUE = "documents.queue";
+                    public static final String EXCHANGE = "documents.exchange";
+                    public static final String ROUTING_KEY = "documents.created";
                 }
                 """);
-        myFixture.addFileToProject("com/dhl/mq/CdtcQueueConfiguration.java", """
-                package com.dhl.mq;
-                public class CdtcQueueConfiguration {
-                    public org.springframework.amqp.core.Queue cdtcQueue() {
+        myFixture.addFileToProject("org/example/mq/DocumentQueueConfiguration.java", """
+                package org.example.mq;
+                public class DocumentQueueConfiguration {
+                    public org.springframework.amqp.core.Queue documentQueue() {
                         org.springframework.amqp.core.Queue queue =
-                            org.springframework.amqp.core.QueueBuilder.durable(CdtcConstants.QUEUE).quorum().build();
+                            org.springframework.amqp.core.QueueBuilder.durable(DocumentConstants.QUEUE).quorum().build();
                         return queue;
                     }
                 }
                 """);
-        myFixture.addFileToProject("com/dhl/mq/CdtcExchangeConfiguration.java", """
-                package com.dhl.mq;
-                public class CdtcExchangeConfiguration {
-                    public org.springframework.amqp.core.TopicExchange cdtcExchange() {
-                        return new org.springframework.amqp.core.TopicExchange(CdtcConstants.EXCHANGE, true, false);
+        myFixture.addFileToProject("org/example/mq/DocumentExchangeConfiguration.java", """
+                package org.example.mq;
+                public class DocumentExchangeConfiguration {
+                    public org.springframework.amqp.core.TopicExchange documentExchange() {
+                        return new org.springframework.amqp.core.TopicExchange(DocumentConstants.EXCHANGE, true, false);
                     }
                 }
                 """);
-        myFixture.addFileToProject("com/dhl/mq/CdtcBindingConfiguration.java", """
-                package com.dhl.mq;
-                public class CdtcBindingConfiguration {
-                    CdtcQueueConfiguration cdtcQueue = new CdtcQueueConfiguration();
-                    CdtcExchangeConfiguration cdtcExchange = new CdtcExchangeConfiguration();
+        myFixture.addFileToProject("org/example/mq/DocumentBindingConfiguration.java", """
+                package org.example.mq;
+                public class DocumentBindingConfiguration {
+                    DocumentQueueConfiguration documentQueue = new DocumentQueueConfiguration();
+                    DocumentExchangeConfiguration documentExchange = new DocumentExchangeConfiguration();
                     public void bind() {
                         org.springframework.amqp.core.Binding binding =
-                            org.springframework.amqp.core.BindingBuilder.bind(cdtcQueue.cdtcQueue())
-                                .to(cdtcExchange.cdtcExchange()).with(CdtcConstants.ROUTING_KEY);
+                            org.springframework.amqp.core.BindingBuilder.bind(documentQueue.documentQueue())
+                                .to(documentExchange.documentExchange()).with(DocumentConstants.ROUTING_KEY);
                     }
                 }
                 """);
-        myFixture.configureByText("CdtcMessageCase.java", """
+        myFixture.configureByText("DocumentMessageCase.java", """
                 import org.example.messaging.MessagePublisher;
-                import com.dhl.mq.CdtcConstants;
-                class CdtcMessageCase {
+                import org.example.mq.DocumentConstants;
+                class DocumentMessageCase {
                     MessagePublisher publisher;
                     void publish() {
                         publisher.publish(
-                            CdtcConstants.EXCHANGE, CdtcConstants.ROUTING_KEY, new Object());
+                            DocumentConstants.EXCHANGE, DocumentConstants.ROUTING_KEY, new Object());
                     }
-                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = CdtcConstants.QUEUE)
+                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = DocumentConstants.QUEUE)
                     void consume(Object value) {}
                 }
                 """);
@@ -450,48 +544,48 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
     }
 
     public void testRabbitListenerFindsProducerWithConditionalRoutingKeyAlias() throws Exception {
-        myFixture.addFileToProject("com/dhl/common/constant/CcdiConstants.java", """
-                package com.dhl.common.constant;
-                public class CcdiConstants {
-                    public static final String QUEUE = "base.ib.call.ccdi.high-val.ib";
-                    public static final String EXCHANGE = "base.ib.ccdi.call";
-                    public static final String HIGH_ROUTING_KEY = "ccdi.call.high-val.ib";
-                    public static final String PROCESS_ROUTING_KEY = "ccdi.call.process.ib";
+        myFixture.addFileToProject("org/example/common/constant/BillingConstants.java", """
+                package org.example.common.constant;
+                public class BillingConstants {
+                    public static final String QUEUE = "billing.high-priority.queue";
+                    public static final String EXCHANGE = "billing.events";
+                    public static final String HIGH_ROUTING_KEY = "billing.high";
+                    public static final String PROCESS_ROUTING_KEY = "billing.process";
                 }
                 """);
-        myFixture.configureByText("CcdiMessageCase.java", """
+        myFixture.configureByText("BillingMessageCase.java", """
                 import org.example.messaging.MessagePublisher;
-                import com.dhl.common.constant.CcdiConstants;
-                class CcdiMessageCase {
+                import org.example.common.constant.BillingConstants;
+                class BillingMessageCase {
                     MessagePublisher publisher;
 
                     void publish(String declarationType) {
                         String routingKey = "D".equals(declarationType)
-                            ? CcdiConstants.HIGH_ROUTING_KEY
-                            : CcdiConstants.PROCESS_ROUTING_KEY;
+                            ? BillingConstants.HIGH_ROUTING_KEY
+                            : BillingConstants.PROCESS_ROUTING_KEY;
                         publisher.publish(
-                            CcdiConstants.EXCHANGE, routingKey, new Object());
+                            BillingConstants.EXCHANGE, routingKey, new Object());
                     }
 
                     @org.springframework.amqp.rabbit.annotation.RabbitListener(
-                        queues = CcdiConstants.QUEUE)
+                        queues = BillingConstants.QUEUE)
                     void consume(Object value) {}
                 }
                 """);
-        myFixture.addFileToProject("CcdiTopologyConfiguration.java", """
-                import com.dhl.common.constant.CcdiConstants;
-                class CcdiTopologyConfiguration {
+        myFixture.addFileToProject("BillingTopologyConfiguration.java", """
+                import org.example.common.constant.BillingConstants;
+                class BillingTopologyConfiguration {
                     org.springframework.amqp.core.Queue queue() {
-                        return org.springframework.amqp.core.QueueBuilder.durable(CcdiConstants.QUEUE).build();
+                        return org.springframework.amqp.core.QueueBuilder.durable(BillingConstants.QUEUE).build();
                     }
                     org.springframework.amqp.core.TopicExchange exchange() {
                         return org.springframework.amqp.core.ExchangeBuilder
-                            .topicExchange(CcdiConstants.EXCHANGE).durable(true).build();
+                            .topicExchange(BillingConstants.EXCHANGE).durable(true).build();
                     }
                     void binding() {
                         org.springframework.amqp.core.Binding binding =
                             org.springframework.amqp.core.BindingBuilder.bind(queue())
-                                .to(exchange()).with(CcdiConstants.HIGH_ROUTING_KEY);
+                                .to(exchange()).with(BillingConstants.HIGH_ROUTING_KEY);
                     }
                 }
                 """);
@@ -501,54 +595,54 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
 
         assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, outcome.status());
         assertEquals("publish", outcome.targets().get(0).memberName());
-        assertEquals("base.ib.ccdi.call", outcome.targets().get(0).destination().exchange());
-        assertEquals("ccdi.call.high-val.ib", outcome.targets().get(0).destination().routingKey());
+        assertEquals("billing.events", outcome.targets().get(0).destination().exchange());
+        assertEquals("billing.high", outcome.targets().get(0).destination().routingKey());
     }
 
     public void testRabbitListenerFindsProducerWithSwitchAssignedRoutingKey() throws Exception {
-        myFixture.addFileToProject("org/example/mq/AssignmentConstants.java", """
+        myFixture.addFileToProject("org/example/mq/OrderTaskConstants.java", """
                 package org.example.mq;
-                public class AssignmentConstants {
-                    public static final String QUEUE = "assignment.data.pre.queue";
-                    public static final String EXCHANGE = "assignment.task.exchange";
-                    public static final String DATA_PRE_ROUTING_KEY = "assignment.data.pre";
-                    public static final String OTHER_ROUTING_KEY = "assignment.other";
+                public class OrderTaskConstants {
+                    public static final String QUEUE = "orders.data.ready.queue";
+                    public static final String EXCHANGE = "orders.task.exchange";
+                    public static final String DATA_PRE_ROUTING_KEY = "orders.data.ready";
+                    public static final String OTHER_ROUTING_KEY = "orders.other";
                 }
                 """);
         myFixture.configureByText("AssignmentMessageCase.java", """
                 import org.example.messaging.MessagePublisher;
-                import org.example.mq.AssignmentConstants;
+                import org.example.mq.OrderTaskConstants;
                 class AssignmentMessageCase {
                     MessagePublisher publisher;
 
                     void publish(String taskType) {
                         String routingKey;
                         switch (taskType) {
-                            case "DATA_PRE_PROCESS" -> routingKey = AssignmentConstants.DATA_PRE_ROUTING_KEY;
-                            default -> routingKey = AssignmentConstants.OTHER_ROUTING_KEY;
+                            case "DATA_PRE_PROCESS" -> routingKey = OrderTaskConstants.DATA_PRE_ROUTING_KEY;
+                            default -> routingKey = OrderTaskConstants.OTHER_ROUTING_KEY;
                         }
-                        publisher.publish(AssignmentConstants.EXCHANGE, routingKey, new Object());
+                        publisher.publish(OrderTaskConstants.EXCHANGE, routingKey, new Object());
                     }
 
                     @org.springframework.amqp.rabbit.annotation.RabbitListener(
-                        queues = AssignmentConstants.QUEUE)
+                        queues = OrderTaskConstants.QUEUE)
                     void consume(Object value) {}
                 }
                 """);
-        myFixture.addFileToProject("AssignmentTopologyConfiguration.java", """
-                import org.example.mq.AssignmentConstants;
-                class AssignmentTopologyConfiguration {
+        myFixture.addFileToProject("OrderTaskTopologyConfiguration.java", """
+                import org.example.mq.OrderTaskConstants;
+                class OrderTaskTopologyConfiguration {
                     org.springframework.amqp.core.Queue queue() {
-                        return org.springframework.amqp.core.QueueBuilder.durable(AssignmentConstants.QUEUE).build();
+                        return org.springframework.amqp.core.QueueBuilder.durable(OrderTaskConstants.QUEUE).build();
                     }
                     org.springframework.amqp.core.TopicExchange exchange() {
                         return org.springframework.amqp.core.ExchangeBuilder
-                            .topicExchange(AssignmentConstants.EXCHANGE).durable(true).build();
+                            .topicExchange(OrderTaskConstants.EXCHANGE).durable(true).build();
                     }
                     void binding() {
                         org.springframework.amqp.core.Binding binding =
                             org.springframework.amqp.core.BindingBuilder.bind(queue())
-                                .to(exchange()).with(AssignmentConstants.DATA_PRE_ROUTING_KEY);
+                                .to(exchange()).with(OrderTaskConstants.DATA_PRE_ROUTING_KEY);
                     }
                 }
                 """);
@@ -558,71 +652,71 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
 
         assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, outcome.status());
         assertEquals("publish", outcome.targets().get(0).memberName());
-        assertEquals("assignment.task.exchange", outcome.targets().get(0).destination().exchange());
-        assertEquals("assignment.data.pre", outcome.targets().get(0).destination().routingKey());
+        assertEquals("orders.task.exchange", outcome.targets().get(0).destination().exchange());
+        assertEquals("orders.data.ready", outcome.targets().get(0).destination().routingKey());
     }
 
     public void testRabbitListenerFindsProducerWithLocalExchangeAndClassicSwitch() throws Exception {
-        myFixture.addFileToProject("org/example/mq/AssignmentConstants.java", """
+        myFixture.addFileToProject("org/example/mq/OrderTaskConstants.java", """
                 package org.example.mq;
-                public class AssignmentConstants {
-                    public static final String QUEUE = "assignment.data.pre.queue";
-                    public static final String EXCHANGE = "assignment.task.exchange";
-                    public static final String DATA_PRE_ROUTING_KEY = "assignment.data.pre";
-                    public static final String OTHER_ROUTING_KEY = "assignment.other";
+                public class OrderTaskConstants {
+                    public static final String QUEUE = "orders.data.ready.queue";
+                    public static final String EXCHANGE = "orders.task.exchange";
+                    public static final String DATA_PRE_ROUTING_KEY = "orders.data.ready";
+                    public static final String OTHER_ROUTING_KEY = "orders.other";
                 }
                 """);
-        myFixture.addFileToProject("org/example/messaging/RabbitTemplateUtil.java", """
+        myFixture.addFileToProject("org/example/messaging/DelegatingMessagePublisher.java", """
                 package org.example.messaging;
-                public class RabbitTemplateUtil {
+                public class DelegatingMessagePublisher {
                     private org.springframework.amqp.rabbit.core.RabbitTemplate rabbitTemplate;
-                    public void clearanceConvertAndSend(String exchange, String routingKey, Object message) {
+                    public void publishMessage(String exchange, String routingKey, Object message) {
                         rabbitTemplate.convertAndSend(exchange, routingKey, message);
                     }
                 }
                 """);
-        myFixture.configureByText("AssignmentProducer.java", """
-                import org.example.messaging.RabbitTemplateUtil;
-                import org.example.mq.AssignmentConstants;
-                class AssignmentProducer {
-                    RabbitTemplateUtil rabbitTemplateUtil;
+        myFixture.configureByText("OrderTaskProducer.java", """
+                import org.example.messaging.DelegatingMessagePublisher;
+                import org.example.mq.OrderTaskConstants;
+                class OrderTaskProducer {
+                    DelegatingMessagePublisher publisher;
                     void publish(TaskType type) {
-                        String exchange = AssignmentConstants.EXCHANGE;
+                        String exchange = OrderTaskConstants.EXCHANGE;
                         String routingKey;
                         switch (type) {
                             case DATA_PRE_PROCESS:
-                                routingKey = AssignmentConstants.DATA_PRE_ROUTING_KEY;
+                                routingKey = OrderTaskConstants.DATA_PRE_ROUTING_KEY;
                                 break;
                             case OTHER:
-                                routingKey = AssignmentConstants.OTHER_ROUTING_KEY;
+                                routingKey = OrderTaskConstants.OTHER_ROUTING_KEY;
                                 break;
                             default:
                                 return;
                         }
-                        rabbitTemplateUtil.clearanceConvertAndSend(exchange, routingKey, new Object());
+                        publisher.publishMessage(exchange, routingKey, new Object());
                     }
-                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = AssignmentConstants.QUEUE)
+                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = OrderTaskConstants.QUEUE)
                     void consume(Object value) {}
                 }
                 enum TaskType { DATA_PRE_PROCESS, OTHER }
                 """);
-        myFixture.addFileToProject("AssignmentTopologyConfiguration.java", """
-                import org.example.mq.AssignmentConstants;
-                class AssignmentTopologyConfiguration {
+        myFixture.addFileToProject("OrderTaskTopologyConfiguration.java", """
+                import org.example.mq.OrderTaskConstants;
+                class OrderTaskTopologyConfiguration {
                     org.springframework.amqp.core.Queue queue() {
                         org.springframework.amqp.core.Queue queue = org.springframework.amqp.core.QueueBuilder
-                            .durable(AssignmentConstants.QUEUE).quorum().build();
+                            .durable(OrderTaskConstants.QUEUE).quorum().build();
                         return queue;
                     }
                     org.springframework.amqp.core.TopicExchange exchange() {
                         org.springframework.amqp.core.TopicExchange exchange =
                             (org.springframework.amqp.core.TopicExchange) org.springframework.amqp.core.ExchangeBuilder
-                                .topicExchange(AssignmentConstants.EXCHANGE).durable(true).build();
+                                .topicExchange(OrderTaskConstants.EXCHANGE).durable(true).build();
                         return exchange;
                     }
                     void binding() {
                         org.springframework.amqp.core.Binding binding = org.springframework.amqp.core.BindingBuilder
-                            .bind(queue()).to(exchange()).with(AssignmentConstants.DATA_PRE_ROUTING_KEY);
+                            .bind(queue()).to(exchange()).with(OrderTaskConstants.DATA_PRE_ROUTING_KEY);
                     }
                 }
                 """);
@@ -632,8 +726,8 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
 
         assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, outcome.status());
         assertEquals("publish", outcome.targets().get(0).memberName());
-        assertEquals("assignment.task.exchange", outcome.targets().get(0).destination().exchange());
-        assertEquals("assignment.data.pre", outcome.targets().get(0).destination().routingKey());
+        assertEquals("orders.task.exchange", outcome.targets().get(0).destination().exchange());
+        assertEquals("orders.data.ready", outcome.targets().get(0).destination().routingKey());
     }
 
     public void testRabbitListenerFindsDirectTemplateProducerWithLocalExchange() throws Exception {
@@ -641,25 +735,25 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
                 class DirectTemplateProducer {
                     org.springframework.amqp.rabbit.core.RabbitTemplate rabbitTemplate;
                     void publish() {
-                        String exchange = "assignment.task.exchange";
-                        rabbitTemplate.convertAndSend(exchange, "assignment.data.pre", new Object());
+                        String exchange = "orders.task.exchange";
+                        rabbitTemplate.convertAndSend(exchange, "orders.data.ready", new Object());
                     }
-                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = "assignment.data.pre.queue")
+                    @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = "orders.data.ready.queue")
                     void consume(Object value) {}
                 }
                 """);
         myFixture.addFileToProject("DirectTemplateTopology.java", """
                 class DirectTemplateTopology {
                     org.springframework.amqp.core.Queue queue() {
-                        return org.springframework.amqp.core.QueueBuilder.durable("assignment.data.pre.queue").build();
+                        return org.springframework.amqp.core.QueueBuilder.durable("orders.data.ready.queue").build();
                     }
                     org.springframework.amqp.core.TopicExchange exchange() {
                         return (org.springframework.amqp.core.TopicExchange) org.springframework.amqp.core.ExchangeBuilder
-                            .topicExchange("assignment.task.exchange").durable(true).build();
+                            .topicExchange("orders.task.exchange").durable(true).build();
                     }
                     void binding() {
                         org.springframework.amqp.core.Binding binding = org.springframework.amqp.core.BindingBuilder
-                            .bind(queue()).to(exchange()).with("assignment.data.pre");
+                            .bind(queue()).to(exchange()).with("orders.data.ready");
                     }
                 }
                 """);
@@ -669,6 +763,41 @@ public class MqNavigationServiceTest extends BasePlatformTestCase {
 
         assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, outcome.status());
         assertEquals("publish", outcome.targets().get(0).memberName());
+    }
+
+    public void testDelegatingRabbitOverloadNavigatesBothWays() throws Exception {
+        myFixture.addFileToProject("FanoutPublisher.java", """
+                class FanoutPublisher {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    void publish(String exchange, String key, Object body) {
+                        template.convertAndSend(exchange, key, body);
+                    }
+                    void publish(String exchange, Object body) { publish(exchange, "", body); }
+                }
+                """);
+        myFixture.configureByText("FanoutOverloadCase.java", """
+                class FanoutOverloadCase {
+                    FanoutPublisher publisher;
+                    void sync() { publisher.publish("business.exchange", new Object()); }
+                    @org.springframework.amqp.rabbit.annotation.RabbitListener(bindings =
+                        @org.springframework.amqp.rabbit.annotation.QueueBinding(
+                            value = @org.springframework.amqp.rabbit.annotation.Queue("business.queue"),
+                            exchange = @org.springframework.amqp.rabbit.annotation.Exchange(
+                                value = "business.exchange", type = "fanout")))
+                    void consume(Object value) {}
+                }
+                """);
+        MqNavigationService service = MqNavigationService.getInstance(getProject());
+
+        var forward = findTargets(service, identifier("publish"));
+        var reverse = findTargets(service, identifier("consume"));
+
+        assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, forward.status());
+        assertEquals("consume", forward.targets().get(0).memberName());
+        assertEquals(MqNavigationService.NavigationStatus.ONE_MATCH, reverse.status());
+        assertEquals("sync", reverse.targets().get(0).memberName());
+        assertEquals("business.exchange", reverse.targets().get(0).destination().exchange());
+        assertEquals("", reverse.targets().get(0).destination().routingKey());
     }
 
     private MqNavigationService.NavigationOutcome findTargets(

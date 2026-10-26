@@ -2,13 +2,13 @@
 
 ## 1. 保留现有树模型和面板边界
 
-**Decision**: 继续使用 `MqTopologyPanel` 内现有 `SimpleTree`、`DefaultMutableTreeNode` 和 `DefaultTreeModel`，不迁移到 InterfaceX 使用的 `AsyncTreeModel`、`StructureTreeModel` 或自定义节点层次。
+**Decision**: 继续使用 `MqTopologyPanel` 内现有 `SimpleTree`、`DefaultMutableTreeNode` 和 `DefaultTreeModel`，不迁移到 参考插件 使用的 `AsyncTreeModel`、`StructureTreeModel` 或自定义节点层次。
 
 **Rationale**: 当前面板已经消费项目级不可变 endpoint 快照并按模块生成树，问题来自 `rebuildTree()` 每次重建后统一展开模块，而不是树基础设施不足。直接修正展开状态应用逻辑改动最小，也避免复制参考项目的缓存和扫描结构。
 
 **Alternatives considered**:
 
-- 复制 InterfaceX 的异步树结构：拒绝；会引入新的模型、节点层次和生命周期复杂度，且没有性能失败证据。
+- 复制 参考插件 的异步树结构：拒绝；会引入新的模型、节点层次和生命周期复杂度，且没有性能失败证据。
 - 新增独立 tree builder/service：拒绝；当前构树逻辑只被一个面板使用，没有现实复用需求。
 
 ## 2. 模块状态使用稳定模块名并仅保留在会话内
@@ -100,8 +100,8 @@
 - `src/main/java/cn/luckyh/mqx/action/RefreshMqIndexAction.java`
 - `src/main/java/cn/luckyh/mqx/navigation/MqNavigationService.java`
 - `src/test/java/cn/luckyh/mqx/navigation/MqNavigationPerformanceTest.java`
-- `D:\github\interfacex\src\main\java\com\kaylves\interfacex\ui\navigator\InterfaceXSimpleTreeStructure.java`（只读）
-- `D:\github\interfacex\src\main\java\com\kaylves\interfacex\action\toolbar\RefreshProjectAction.java`（只读）
+- 外部参考插件的导航树行为（只读参考，不包含其源码）
+- 外部参考插件的刷新动作行为（只读参考，不包含其源码）
 - [JetBrains Threading Model](https://plugins.jetbrains.com/docs/intellij/threading-model.html)
 - [JetBrains Tool Window UI Guidelines](https://plugins.jetbrains.com/docs/intellij/tool-window.html)
 - [JetBrains Action System](https://plugins.jetbrains.com/docs/intellij/action-system.html)

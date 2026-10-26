@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-test:
+    name: Test Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - run: .\gradlew.bat test --no-daemon
+
+  package:
+    name: Validate and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Check release version
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const line = fs.readFileSync('gradle.properties', 'utf8')
+            .split('\n').find(value => value.startsWith('pluginVersion='));
+          const version = line && line.slice('pluginVersion='.length).trim();
+          if (!version || process.env.GITHUB_REF_NAME !== 'v' + version) {
+            throw new Error('Release tag must match pluginVersion in gradle.properties');
+          }
+          NODE
+      - name: Run release checks and build ZIP
+        run: ./gradlew test verifyPluginProjectConfiguration verifyPluginStructure verifyPlugin buildPlugin --no-daemon
+      - name: Calculate checksums
+        working-directory: build/distributions
+        run: sha256sum *.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-package
+          path: |
+            build/distributions/*.zip
+            build/distributions/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [package, windows-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: plugin-package
+          path: build/distributions
+      - name: Upload verified assets and publish
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('node:fs');
+            const tag = context.ref.slice('refs/tags/'.length);
+            const version = tag.slice(1);
+            const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const start = changelog.indexOf('## [' + version + ']');
+            if (start < 0) throw new Error('Missing changelog entry for ' + version);
+            const end = changelog.indexOf('\n## [', start + 1);
+            const body = changelog.slice(start, end < 0 ? undefined : end).trim();
+            const repo = context.repo;
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ ...repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({
+                ...repo, tag_name: tag, target_commitish: context.sha,
+                name: 'MQ Navigator ' + tag, body, draft: true, prerelease: false
+              })).data;
+            }
+            if (!release.draft) {
+              core.info('Release is already published: ' + release.html_url);
+              return;
+            }
+            for (const name of ['mqx-plugin-' + version + '.zip', 'SHA256SUMS.txt']) {
+              const existing = release.assets.find(asset => asset.name === name);
+              if (existing) await github.rest.repos.deleteReleaseAsset({ ...repo, asset_id: existing.id });
+              const data = fs.readFileSync('build/distributions/' + name);
+              await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id: release.id, name, data,
+                headers: { 'content-type': name.endsWith('.zip') ? 'application/zip' : 'text/plain' }
+              });
+            }
+            const published = await github.rest.repos.updateRelease({
+              ...repo, release_id: release.id, body, draft: false, make_latest: 'true'
+            });
+            core.info('Published ' + published.data.html_url);

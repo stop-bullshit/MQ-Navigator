@@ -27,7 +27,7 @@
 
 **Decision**: 保留 `ReadAction.nonBlocking(...).inSmartMode(project).expireWith(project).finishOnUiThread(...)`，仅在现有 UI 生命周期点切换进度条。
 
-**Rationale**: 当前刷新已经满足索引、read action、项目关闭和 EDT 边界。InterfaceX 参考实现通过 `Task.Backgroundable` 和 `ProgressIndicator.setIndeterminate(true)` 表达扫描中，但复制该结构会重写现有执行链、取消行为和全局进度展示，远超增加侧边栏进度条的范围。
+**Rationale**: 当前刷新已经满足索引、read action、项目关闭和 EDT 边界。参考插件 参考实现通过 `Task.Backgroundable` 和 `ProgressIndicator.setIndeterminate(true)` 表达扫描中，但复制该结构会重写现有执行链、取消行为和全局进度展示，远超增加侧边栏进度条的范围。
 
 **Alternatives considered**:
 
@@ -89,6 +89,6 @@
 - `src/test/java/cn/luckyh/mqx/navigation/MqNavigationPerformanceTest.java`
 - `build.gradle.kts`
 - 本地 IDEA 2023.3 与 2026.2.1 中的标准 `JProgressBar`、`com.intellij.ui.components.JBLoadingPanel` 和 `com.intellij.util.ui.AsyncProcessIcon`
-- `D:\github\interfacex\src\main\java\com\kaylves\interfacex\ui\navigator\InterfaceXSimpleTreeStructure.java`（只读）
+- 外部参考插件的导航树行为（只读参考，不包含其源码）
 
 所有技术未知项已解决，无 `NEEDS CLARIFICATION`。

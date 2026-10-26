@@ -6,7 +6,7 @@
 
 **Status**: Ready for Planning
 
-**Input**: User description: "这是一个 IDEA 插件，可以扫描项目代码并在 FeignClient 调用方和 Server 端之间跳转。参考这个项目，新建一个可以在消息队列发送端和接收端之间跳转的插件，并在 D:\github 目录下新建项目实现。"
+**Input**: User description: "这是一个 IDEA 插件，可以扫描项目代码并在 FeignClient 调用方和 Server 端之间跳转。参考这个项目，新建一个可以在消息队列发送端和接收端之间跳转的插件，并在 <workspace-parent> 目录下新建项目实现。"
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -38,7 +38,7 @@
 
 1. **Given** 当前项目中存在一个接收端和唯一匹配的发送端，**When** 用户在接收位置触发导航，**Then** 编辑器直接打开并定位到该发送位置。
 2. **Given** 当前项目中不存在匹配发送端，**When** 用户在接收位置触发导航，**Then** 系统明确提示未找到发送端且保留用户当前编辑位置。
-3. **Given** RabbitMQ 消息由外部系统发送且项目使用 `QueueBuilder.durable(CONSTANT)` 声明队列，**When** 用户在 listener 或队列声明位置触发导航，**Then** 两者可按静态队列名双向跳转，且项目内发送端存在时仍优先发送端与 listener 的直接关系。
+3. **Given** RabbitMQ 消息由外部系统发送且项目使用 `QueueBuilder.durable(CONSTANT)` 声明队列，**When** 用户从 listener 反查发送端，**Then** 不把队列声明误认作发送端；项目内没有匹配发送调用时提示未找到，队列与绑定仍可从 Topology 侧栏打开源码。
 
 ---
 
@@ -111,7 +111,7 @@
 
 - 当前打开 IDEA 项目内、跨源码模块的消息发送端与接收端扫描。
 - RabbitMQ、Kafka、RocketMQ 的常见静态声明、项目内编译期常量、可证明的枚举常量字符串 getter、接收端配置引用，以及发送端直接引用的单一配置占位符字段。
-- RabbitMQ `QueueBuilder.durable(...)` 的静态队列声明、`BindingBuilder`/`ExchangeBuilder` 拓扑解析，以及从队列/监听器通过交换机反查发送端。
+- RabbitMQ `QueueBuilder.durable(...)` 的静态队列声明、`BindingBuilder`/`ExchangeBuilder` 拓扑解析，以及从监听器通过交换机反查实际发送调用；队列声明仅作为拓扑数据展示。
 - 编辑器内双向导航、单目标直达、多目标选择、未匹配反馈和主动重新扫描。
 - RabbitMQ 项目级工具窗口、模块/收发端分组、关系展示和筛选。
 - 源码变更后的结果更新，以及无法静态确定目标时的安全降级。
@@ -146,7 +146,7 @@
 
 ## Assumptions
 
-- 新项目目录采用 `D:\github\mqx-plugin`，插件暂用产品名“MQ Navigator”；名称可在规划阶段调整，不改变本规格的功能范围。
+- 新项目目录采用 `<workspace>`，插件暂用产品名“MQ Navigator”；名称可在规划阶段调整，不改变本规格的功能范围。
 - 目标用户是在 IDEA 中维护 Java/Spring 多模块项目、需要追踪异步消息调用关系的开发人员。
 - 首版优先处理源码中可静态确定的消息关系；运行时才能确定的关系允许明确降级为“无法静态定位”。
 - 首版对发送端配置的静态分析仅覆盖直接字段引用，且该字段由单一配置占位符赋值；其他依赖注入或数据流形式不在首版范围。

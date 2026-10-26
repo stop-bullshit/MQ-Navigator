@@ -48,7 +48,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class MqNavigationCacheTest extends BasePlatformTestCase {
 
-    private static final int CACHE_VERSION = 2;
+    private static final int CACHE_VERSION = 3;
     private static final int PERFORMANCE_ENDPOINT_COUNT = 2_000;
     private static final int PERFORMANCE_WARMUPS = 5;
     private static final int PERFORMANCE_SAMPLES = 20;
@@ -75,6 +75,14 @@ public class MqNavigationCacheTest extends BasePlatformTestCase {
         assertEquals(CACHE_VERSION, service.getState().version);
         assertTrue(service.getState().savedAt > 0);
         assertEquals(1, service.getState().endpoints.size());
+    }
+
+    public void testPreviousParserCacheIsRebuiltAfterUpgrade() throws Exception {
+        configureSource("source-topic");
+        MqNavigationService.CacheState oldState = cacheState(List.of());
+        oldState.version = 2;
+
+        assertFallsBackToSource(oldState, "source-topic");
     }
 
     public void testValidCacheRestoresWithoutScanningAndReturnsImmutableSortedSnapshot() throws Exception {

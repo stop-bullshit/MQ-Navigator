@@ -127,15 +127,24 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
                 }
             }
         }
-        // 逻辑变动: 从实际委托到Spring AMQP发送方法的实现识别通用发送封装-20260818-1350-01
-        for (PsiMethod wrapper : producerWrappers) {
+        // 逻辑变动: 沿发送封装委托链收集业务调用并保留空路由键-20261023-1125-01
+        List<PsiMethod> pendingWrappers = new ArrayList<>(producerWrappers);
+        for (int index = 0; index < pendingWrappers.size(); index++) {
+            PsiMethod wrapper = pendingWrappers.get(index);
             if (!searchedMethods.add(wrapper)) {
                 continue;
             }
             MethodReferencesSearch.search(wrapper, projectScope, true).forEach(reference -> {
                 if (reference.getElement() instanceof PsiReferenceExpression expression) {
-                    endpoints.addAll(parseProducerEndpoints(
-                            expression.getReferenceNameElement(), cacheDependencies));
+                    PsiMethod caller = PsiTreeUtil.getParentOfType(expression, PsiMethod.class);
+                    if (isProducerWrapper(caller)) {
+                        if (producerWrappers.add(caller)) {
+                            pendingWrappers.add(caller);
+                        }
+                    } else {
+                        endpoints.addAll(parseProducerEndpoints(
+                                expression.getReferenceNameElement(), cacheDependencies));
+                    }
                 }
                 return true;
             });
@@ -409,7 +418,15 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             return List.of();
         }
 
-        return parseWrapperProducerEndpoints(anchor, call, method, dependencies);
+        Map<PsiParameter, List<MqValueResolver.ResolvedValue>> parameterValues = new LinkedHashMap<>();
+        PsiParameter[] parameters = method.getParameterList().getParameters();
+        PsiExpression[] arguments = call.getArgumentList().getExpressions();
+        for (int index = 0; index < Math.min(parameters.length, arguments.length); index++) {
+            parameterValues.put(parameters[index],
+                    valueResolver.resolveExpressionAlternatives(arguments[index], dependencies));
+        }
+        return parseWrapperProducerEndpoints(anchor, method, parameterValues, dependencies,
+                new LinkedHashSet<>(), new LinkedHashMap<>());
     }
 
     private void collectExchangeDeclarations(
@@ -470,15 +487,38 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
         return producerEndpoints(anchor, exchanges, routingKeys);
     }
 
+    /**
+     * 沿发送封装逐层映射实参，跳过循环委托；同一方法的相同实参只解析一次，避免汇合分支重复展开。
+     */
     private List<MqEndpoint> parseWrapperProducerEndpoints(
             PsiElement anchor,
-            PsiMethodCallExpression wrapperCall,
             PsiMethod wrapper,
-            Set<Object> dependencies) {
+            Map<PsiParameter, List<MqValueResolver.ResolvedValue>> parameterValues,
+            Set<Object> dependencies,
+            Set<PsiMethod> visited,
+            Map<PsiMethod, Set<Map<PsiParameter, List<MqValueResolver.ResolvedValue>>>> parsedWrappers) {
+        if (!visited.add(wrapper)
+                || !parsedWrappers.computeIfAbsent(wrapper, ignored -> new LinkedHashSet<>()).add(parameterValues)) {
+            return List.of();
+        }
         List<MqEndpoint> endpoints = new ArrayList<>();
-        for (PsiMethodCallExpression templateCall : templateCalls(wrapper)) {
+        for (PsiMethodCallExpression templateCall : methodCalls(wrapper)) {
             PsiMethod templateMethod = templateCall.resolveMethod();
             if (templateMethod == null) {
+                continue;
+            }
+            if (!isTemplateSendMethod(templateMethod)) {
+                if (isProducerWrapper(templateMethod)) {
+                    Map<PsiParameter, List<MqValueResolver.ResolvedValue>> nestedValues = new LinkedHashMap<>();
+                    PsiParameter[] parameters = templateMethod.getParameterList().getParameters();
+                    PsiExpression[] arguments = templateCall.getArgumentList().getExpressions();
+                    for (int index = 0; index < Math.min(parameters.length, arguments.length); index++) {
+                        nestedValues.put(parameters[index], resolveWrapperExpressionAlternatives(
+                                arguments[index], parameterValues, dependencies, new LinkedHashSet<>()));
+                    }
+                    endpoints.addAll(parseWrapperProducerEndpoints(anchor, templateMethod, nestedValues,
+                            dependencies, new LinkedHashSet<>(visited), parsedWrappers));
+                }
                 continue;
             }
             int leadingStrings = leadingStringParameters(templateMethod);
@@ -491,13 +531,13 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             List<MqValueResolver.ResolvedValue> routingKeys;
             if (leadingStrings >= 2 && arguments.length > 1) {
                 exchanges = resolveWrapperExpressionAlternatives(
-                        arguments[0], wrapper, wrapperCall, dependencies, new LinkedHashSet<>());
+                        arguments[0], parameterValues, dependencies, new LinkedHashSet<>());
                 routingKeys = resolveWrapperExpressionAlternatives(
-                        arguments[1], wrapper, wrapperCall, dependencies, new LinkedHashSet<>());
+                        arguments[1], parameterValues, dependencies, new LinkedHashSet<>());
             } else {
                 exchanges = List.of(MqValueResolver.ResolvedValue.staticValue(""));
                 routingKeys = resolveWrapperExpressionAlternatives(
-                        arguments[0], wrapper, wrapperCall, dependencies, new LinkedHashSet<>());
+                        arguments[0], parameterValues, dependencies, new LinkedHashSet<>());
             }
             endpoints.addAll(producerEndpoints(anchor, exchanges, routingKeys));
         }
@@ -533,36 +573,88 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
     }
 
     private boolean isProducerWrapper(PsiMethod method) {
-        if (method == null || method.getBody() == null) {
-            return false;
+        if (!wrapperDestinationParameters(method).isEmpty()) {
+            return true;
         }
-        for (PsiMethodCallExpression templateCall : templateCalls(method)) {
-            PsiMethod templateMethod = templateCall.resolveMethod();
-            if (templateMethod == null) {
-                continue;
-            }
-            int leadingStrings = leadingStringParameters(templateMethod);
-            PsiExpression[] arguments = templateCall.getArgumentList().getExpressions();
-            if (arguments.length == 0) {
-                return true;
-            }
-            int destinationCount = leadingStrings >= 2 && arguments.length > 1 ? 2 : 1;
-            for (int i = 0; i < destinationCount; i++) {
-                if (isWrapperParameter(arguments[i], method)) {
-                    return true;
+        return methodCalls(method).stream().anyMatch(call -> isTemplateSendMethod(call.resolveMethod())
+                && call.getArgumentList().getExpressionCount() == 0);
+    }
+
+    // 逻辑变动: 仅将传入MQ目的地的参数沿委托链回溯为发送封装-20261023-1125-01
+    private Set<PsiParameter> wrapperDestinationParameters(PsiMethod method) {
+        if (method == null || method.getBody() == null) {
+            return Set.of();
+        }
+        List<PsiMethod> methods = new ArrayList<>(List.of(method));
+        Map<PsiMethod, List<PsiMethodCallExpression>> callsByMethod = new LinkedHashMap<>();
+        Map<PsiMethod, Set<PsiParameter>> parametersByMethod = new LinkedHashMap<>();
+        parametersByMethod.put(method, new LinkedHashSet<>());
+        for (int index = 0; index < methods.size(); index++) {
+            PsiMethod current = methods.get(index);
+            List<PsiMethodCallExpression> calls = methodCalls(current);
+            callsByMethod.put(current, calls);
+            for (PsiMethodCallExpression call : calls) {
+                PsiMethod target = call.resolveMethod();
+                if (target == null) {
+                    continue;
+                }
+                PsiExpression[] arguments = call.getArgumentList().getExpressions();
+                if (isTemplateSendMethod(target)) {
+                    int count = Math.min(leadingStringParameters(target) >= 2 ? 2 : 1, arguments.length);
+                    for (int argument = 0; argument < count; argument++) {
+                        if (isWrapperParameter(arguments[argument], current)) {
+                            parametersByMethod.get(current).add(
+                                    (PsiParameter) ((PsiReferenceExpression) arguments[argument]).resolve());
+                        }
+                    }
+                    continue;
+                }
+                if (target.getBody() == null || parametersByMethod.containsKey(target)) {
+                    continue;
+                }
+                for (PsiExpression argument : arguments) {
+                    if (isWrapperParameter(argument, current)) {
+                        parametersByMethod.put(target, new LinkedHashSet<>());
+                        methods.add(target);
+                        break;
+                    }
                 }
             }
         }
-        return false;
+
+        // 每个方法只展开一次，再传播目的地参数，避免重复分支指数扫描并使循环委托收敛。
+        boolean changed;
+        do {
+            changed = false;
+            for (int index = methods.size() - 1; index >= 0; index--) {
+                PsiMethod current = methods.get(index);
+                for (PsiMethodCallExpression call : callsByMethod.get(current)) {
+                    PsiMethod target = call.resolveMethod();
+                    Set<PsiParameter> targetParameters = parametersByMethod.get(target);
+                    if (targetParameters == null) {
+                        continue;
+                    }
+                    PsiExpression[] arguments = call.getArgumentList().getExpressions();
+                    for (PsiParameter parameter : List.copyOf(targetParameters)) {
+                        int argument = target.getParameterList().getParameterIndex(parameter);
+                        if (argument >= 0 && argument < arguments.length
+                                && isWrapperParameter(arguments[argument], current)) {
+                            changed |= parametersByMethod.get(current).add(
+                                    (PsiParameter) ((PsiReferenceExpression) arguments[argument]).resolve());
+                        }
+                    }
+                }
+            }
+        } while (changed);
+        return parametersByMethod.get(method);
     }
 
-    private List<PsiMethodCallExpression> templateCalls(PsiMethod method) {
+    private List<PsiMethodCallExpression> methodCalls(PsiMethod method) {
         if (method == null || method.getBody() == null) {
             return List.of();
         }
         return PsiTreeUtil.findChildrenOfType(method, PsiMethodCallExpression.class).stream()
                 .filter(call -> PsiTreeUtil.getParentOfType(call, PsiMethod.class) == method)
-                .filter(call -> isTemplateSendMethod(call.resolveMethod()))
                 .toList();
     }
 
@@ -574,21 +666,16 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
 
     private List<MqValueResolver.ResolvedValue> resolveWrapperExpressionAlternatives(
             PsiExpression expression,
-            PsiMethod wrapper,
-            PsiMethodCallExpression wrapperCall,
+            Map<PsiParameter, List<MqValueResolver.ResolvedValue>> parameterValues,
             Set<Object> dependencies,
             Set<PsiElement> visited) {
         if (!visited.add(expression)) {
             return List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper expression is recursive"));
         }
         if (expression instanceof PsiReferenceExpression reference
-                && reference.resolve() instanceof PsiParameter parameter
-                && parameter.getDeclarationScope() == wrapper) {
-            int index = wrapper.getParameterList().getParameterIndex(parameter);
-            PsiExpression[] arguments = wrapperCall.getArgumentList().getExpressions();
-            return index >= 0 && index < arguments.length
-                    ? valueResolver.resolveExpressionAlternatives(arguments[index], dependencies)
-                    : List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper argument is missing"));
+                && reference.resolve() instanceof PsiParameter parameter) {
+            return parameterValues.getOrDefault(parameter,
+                    List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper argument is missing")));
         }
         if (expression instanceof PsiConditionalExpression conditional
                 && conditional.getThenExpression() != null
@@ -597,7 +684,7 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             for (PsiExpression branch : List.of(
                     conditional.getThenExpression(), conditional.getElseExpression())) {
                 List<MqValueResolver.ResolvedValue> branchValues = resolveWrapperExpressionAlternatives(
-                        branch, wrapper, wrapperCall, dependencies, new LinkedHashSet<>(visited));
+                        branch, parameterValues, dependencies, new LinkedHashSet<>(visited));
                 if (branchValues.stream().anyMatch(value -> !value.resolved())) {
                     return branchValues;
                 }
@@ -609,7 +696,7 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
                 && reference.resolve() instanceof PsiVariable variable
                 && variable.getInitializer() != null) {
             return resolveWrapperExpressionAlternatives(
-                    variable.getInitializer(), wrapper, wrapperCall, dependencies, visited);
+                    variable.getInitializer(), parameterValues, dependencies, visited);
         }
         return List.of(valueResolver.resolveExpression(expression, dependencies));
     }

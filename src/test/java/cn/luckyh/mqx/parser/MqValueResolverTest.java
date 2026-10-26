@@ -66,21 +66,21 @@ public class MqValueResolverTest extends BasePlatformTestCase {
                 String type = "DATA_PRE_PROCESS";
                 String key;
                 switch (type) {
-                    case "DATA_PRE_PROCESS" -> key = "assignment.data.pre";
-                    default -> key = "assignment.other";
+                    case "DATA_PRE_PROCESS" -> key = "orders.data.ready";
+                    default -> key = "orders.other";
                 }
                 template.send(key, new Object())
                 """);
         var values = new MqValueResolver(getProject())
                 .resolveExpressionAlternatives(routingKey, new LinkedHashSet<>());
         assertEquals(2, values.size());
-        assertEquals("assignment.data.pre", values.get(0).value());
-        assertEquals("assignment.other", values.get(1).value());
+        assertEquals("orders.data.ready", values.get(0).value());
+        assertEquals("orders.other", values.get(1).value());
     }
 
     public void testLocalStaticInitializerProducesStaticAlternative() {
         PsiExpression exchange = argument("""
-                String exchange = "assignment.task.exchange";
+                String exchange = "orders.task.exchange";
                 template.send(exchange, new Object())
                 """);
 
@@ -88,13 +88,13 @@ public class MqValueResolverTest extends BasePlatformTestCase {
                 .resolveExpressionAlternatives(exchange, new LinkedHashSet<>());
 
         assertEquals(1, values.size());
-        assertEquals("assignment.task.exchange", values.get(0).value());
+        assertEquals("orders.task.exchange", values.get(0).value());
     }
 
     public void testEnumConstantGetterResolvesStaticString() {
         PsiExpression routingKey = argument(
-                "template.send(RoutingKey.CHECKPOINT_IB_HI.getCode(), new Object())",
-                "enum RoutingKey { CHECKPOINT_IB_HI(\"checkpoint.ib.hi\", \"description\");\n"
+                "template.send(RoutingKey.ORDER_CREATED.getCode(), new Object())",
+                "enum RoutingKey { ORDER_CREATED(\"orders.created\", \"description\");\n"
                         + "private final String code; private final String description;\n"
                         + "RoutingKey(String code, String description) { this.code = code; this.description = description; }\n"
                         + "public String getCode() { return code; } }");
@@ -102,21 +102,21 @@ public class MqValueResolverTest extends BasePlatformTestCase {
         MqValueResolver.ResolvedValue value = new MqValueResolver(getProject())
                 .resolveExpression(routingKey, new LinkedHashSet<>());
 
-        assertEquals("checkpoint.ib.hi", value.value());
+        assertEquals("orders.created", value.value());
         assertEquals(cn.luckyh.mqx.model.MqEndpoint.ResolutionState.STATIC, value.state());
     }
 
     public void testEnumConstantLombokGetterResolvesStaticStringWithoutMethodBody() {
         PsiExpression routingKey = argument(
-                "template.send(RoutingKey.CHECKPOINT_IB_HI.getCode(), new Object())",
-                "@lombok.Getter enum RoutingKey { CHECKPOINT_IB_HI(\"checkpoint.ib.hi\", \"description\");\n"
+                "template.send(RoutingKey.ORDER_CREATED.getCode(), new Object())",
+                "@lombok.Getter enum RoutingKey { ORDER_CREATED(\"orders.created\", \"description\");\n"
                         + "private final String code; private final String description;\n"
                         + "RoutingKey(String code, String description) { this.code = code; this.description = description; } }");
 
         MqValueResolver.ResolvedValue value = new MqValueResolver(getProject())
                 .resolveExpression(routingKey, new LinkedHashSet<>());
 
-        assertEquals("checkpoint.ib.hi", value.value());
+        assertEquals("orders.created", value.value());
         assertEquals(cn.luckyh.mqx.model.MqEndpoint.ResolutionState.STATIC, value.state());
     }
 

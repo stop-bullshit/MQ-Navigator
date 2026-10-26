@@ -10,7 +10,7 @@
 - `.gitignore` 已覆盖当前 Java/Gradle/IntelliJ 构建目录；未检测到 Docker、Node、ESLint、Prettier、Terraform 或 Helm 配置，无需新增忽略文件。
 - 受保护生产文件：`MqNavigationService`、全部 MQ parser、`MqEndpointMatcher`、`MqToolWindowService`、`plugin.xml`、依赖和插件版本。
 - 受保护功能：Consumers、Producers、Topology、Queues、Bindings、Exchanges 的分组和匹配含义；Kafka/RocketMQ 工具窗口；全部展开/全部折叠；状态持久化。
-- 只读外部参考：`D:/github/interfacex`、`D:/github/feignx-plugin`。
+- 只读外部参考：`<reference-project>`、`<reference-plugin>`。
 
 ## Focused UI
 

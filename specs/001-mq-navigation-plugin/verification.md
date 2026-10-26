@@ -2,11 +2,11 @@
 
 ## Story Red/Green Evidence
 
-- Phase 9 enum getter green: `MqValueResolverTest` and `MqNavigationServiceTest` cover explicit enum getter bodies and Lombok-style unresolved getter calls. The full `QueueBuilder → BindingBuilder → ExchangeBuilder → producer wrapper` fixture resolves `checkpoint.ib.hi` and returns the unique `publish` producer.
+- Phase 9 enum getter green: `MqValueResolverTest` and `MqNavigationServiceTest` cover explicit enum getter bodies and Lombok-style unresolved getter calls. The full `QueueBuilder → BindingBuilder → ExchangeBuilder → producer wrapper` fixture resolves `orders.created` and returns the unique `publish` producer.
 - Phase 9 UI/icon build green: `compileJava`, `verifyPluginProjectConfiguration`, `verifyPluginStructure`, and `buildPlugin` passed after adding module/Consumers/Producers/Topology grouping, text/type filters, relationship nodes, and the 16px RabbitMQ SVG icon.
 - Tool Window double-click regression green: producer nodes now use the mouse coordinates to resolve the clicked `TreePath`, disable JTree's own double-click expansion, and call `OpenSourceUtil` with the exact smart-pointer navigation element. The full offline test run passed 46 tests with 0 failures and 0 errors; the preceding online test attempt was blocked only by a JetBrains repository SSL handshake and succeeded with the already cached dependencies.
 - Icon resource integration green: the standard `META-INF/pluginIcon.svg` is present, the plugin descriptor and Tool Window use `mq-navigator-plugin-logo.svg`, and the README includes the lockup artwork. `buildPlugin`, `verifyPluginProjectConfiguration`, and `verifyPluginStructure` pass offline for version `0.2.3`.
-- Icon regression test green: `MqLineMarkerProviderTest` uses the repository SVG gutter resources, and the refresh action uses the repository RabbitMQ SVG resource.
+- Icon regression test green: `MqLineMarkerProviderTest` uses the repository SVG gutter resources. Release 0.2.11 replaces the earlier RabbitMQ artwork with project-owned MQ icons.
 
 - US1 red: targeted Gradle test run failed at `compileTestJava` with 30 missing-symbol errors for the seven intentionally absent production classes. The model and test-framework setup compiled first, so the red result is isolated to the planned US1 behavior.
 - US1 green: 11 targeted tests passed across value resolution, RabbitMQ/Kafka/RocketMQ parsing, matching, project snapshot lookup, and producer line markers.
@@ -25,7 +25,7 @@
 - Initial wrapper generation first failed because the machine-wide Gradle init script adds MavenLocal while repository mode was strict; removing the unnecessary strict mode resolved the environment conflict.
 - Final full test: PASS, 46 tests in 9 suites, 0 failures, 0 errors, 0 skipped. The final code also passed `clean test --rerun-tasks`; the additional tests cover enum constant getter resolution and the real CheckPoint-style RabbitMQ route chain.
 - Real-project regression: `MessageStrategy.java` exposed an instrumented `@NotNull className` failure for an anonymous class. The endpoint factory now normalizes anonymous class/member names before constructing the record; the dedicated Kafka parser test passes with `className=""` and `memberName="run"`.
-- Real-project Rabbit regression: the inspected `CdtcQueueMqConfiguration.java` uses `QueueBuilder.durable(CdtcDockingQueueConstants.*).quorum().build()` and `RabbitAdmin.declareQueue(...)`, while listeners use the same imported constant. The implementation now recognizes the `durable` call as a static queue declaration and resolves the annotation constant through its final field initializer.
+- Real-project Rabbit regression: the inspected `DocumentQueueConfiguration.java` uses `QueueBuilder.durable(DocumentQueueConstants.*).quorum().build()` and `RabbitAdmin.declareQueue(...)`, while listeners use the same imported constant. The implementation now recognizes the `durable` call as a static queue declaration and resolves the annotation constant through its final field initializer.
 
 ## Plugin Verifier
 

@@ -193,5 +193,5 @@ Task T010: 在 src/main/java/cn/luckyh/mqx/action/RefreshMqIndexAction.java 使�
 - 所有 22 项任务均使用 `- [ ] Tnnn [P?] [US?]` 格式和具体路径。
 - `[P]` 只表示文件和依赖允许并行，不表示可以跳过前置 red 门禁。
 - 不新增生产类、接口、Manager、Handler、Processor、Context、线程、锁、索引、缓存或持久化。
-- 不修改 `MqNavigationService`、parser、matcher、`MqToolWindowService`、`plugin.xml`、依赖、插件版本、`D:\github\interfacex` 或 `D:\github\feignx-plugin`。
+- 不修改 `MqNavigationService`、parser、matcher、`MqToolWindowService`、`plugin.xml`、依赖、插件版本、`<reference-project>` 或 `<reference-plugin>`。
 - 执行 `$speckit-analyze` 并关闭 HIGH/CRITICAL 不一致后，才能进入 `$speckit-implement`。

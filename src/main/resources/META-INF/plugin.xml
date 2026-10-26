@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>cn.luckyh.mqx</id>
     <name>MQ Navigator</name>
-    <vendor>luckyh</vendor>
+    <vendor url="https://github.com/stop-bullshit/mqx-plugin">luckyh</vendor>
     <description><![CDATA[
         Navigate between RabbitMQ, Kafka, and RocketMQ producers and consumers in the current project.
     ]]></description>
@@ -19,7 +19,7 @@
         <toolWindow id="MQ Navigator"
                     factoryClass="cn.luckyh.mqx.ui.MqToolWindowFactory"
                     anchor="right"
-                    icon="/icons/rabbitmq-seeklogo.svg"/>
+                    icon="/icons/mq-navigator-toolwindow.svg"/>
         <notificationGroup id="MQ Navigator" displayType="BALLOON"/>
     </extensions>
 

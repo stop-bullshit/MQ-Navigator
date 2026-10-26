@@ -4,7 +4,7 @@
 
 - Windows PowerShell
 - JDK 17
-- 仓库根目录 `D:\github\mqx-plugin`
+- 仓库根目录 `<workspace>`
 - Gradle Wrapper 可用
 
 ## 1. Parser Focused Validation

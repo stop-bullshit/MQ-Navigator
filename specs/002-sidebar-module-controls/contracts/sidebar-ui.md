@@ -72,7 +72,7 @@ RabbitMQ (visible/total)
 - tree model、展开路径和状态文本只在 EDT 修改。
 - 不使用自定义线程、锁、原子状态、第二套缓存或持久化。
 - 不修改用户项目，不连接或查询 broker。
-- 不修改 `D:\github\interfacex`，只参考其可见交互。
+- 不修改 `<reference-project>`，只参考其可见交互。
 
 ## 8. Requirement Mapping
 

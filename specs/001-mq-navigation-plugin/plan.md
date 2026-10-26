@@ -37,7 +37,7 @@
 | I. 最小范围与直接实现 | PASS | PASS | 单模块、一个项目服务；仅 `MqEndpointParser` 有三个现实实现，不增加 Manager/Handler/Context 链 |
 | II. 平台优先与证据驱动复杂度 | PASS | PASS | 复用 Java PSI、平台搜索/索引、CachedValue、智能指针、daemon 和标准导航；不引入自定义索引/监听器/线程池/锁 |
 | III. PSI、索引与并发安全 | PASS | PASS | 计划规定项目搜索不在 EDT、dumb mode 不访问索引、长期位置仅保存智能指针、状态按 Project 隔离 |
-| IV. 用户项目只读与运行时隔离 | PASS | PASS | 仅分析当前项目 PSI/配置，不执行 Spring 上下文；本地 TCP sentinel 断言三种 broker 连接尝试为零，分阶段 SHA-256 证明用户文件零改动，FeignX 保持只读 |
+| IV. 用户项目只读与运行时隔离 | PASS | PASS | 仅分析当前项目 PSI/配置，不执行 Spring 上下文；本地 TCP sentinel 断言三种 broker 连接尝试为零，分阶段 SHA-256 证明用户文件零改动，参考插件 保持只读 |
 | V. 测试先行与量化证据 | PASS | PASS | 除唯一 heavy 性能测试外均用轻量 fixture；性能门槛固定为 50 个真实模块、2,000 端点、200/40 样本、nearest-rank p95 和 JUnit 六分钟总超时；自动化只计完整导航结果计算，用户可见体验由固定试用流程验证 |
 | VI. 可追踪的增量交付 | PASS | PASS | 每个用户故事可独立验证；点击时最新结果、MVP 缓存、真实多模块基准和配置字段边界均已映射到设计与验收，后续 `/speckit-tasks` 必须据此重生成任务 |
 
@@ -170,9 +170,9 @@ Java leaf element
 
 ### Files to create or modify
 
-- 仅创建 `D:\github\mqx-plugin` 下的 Gradle、插件描述、源码、测试与本功能文档。
-- 不复制 FeignX 的包名结构、静态缓存实现或监听 Handler；只复用已验证的交互思想。
-- 不修改 `D:\github\feignx-plugin` 中任何现有或未提交文件。
+- 仅创建 `<workspace>` 下的 Gradle、插件描述、源码、测试与本功能文档。
+- 不复制 参考插件 的包名结构、静态缓存实现或监听 Handler；只复用已验证的交互思想。
+- 不修改 `<reference-plugin>` 中任何现有或未提交文件。
 
 ### Explicitly protected scope
 

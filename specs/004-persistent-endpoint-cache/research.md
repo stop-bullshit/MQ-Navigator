@@ -14,7 +14,7 @@
 
 **Rationale**: 该位置由平台映射到 IDE system path，按项目服务隔离，不写用户项目；无需新增依赖、目录管理、原子文件替换或清理机制。
 
-**Alternatives considered**: InterfaceX 的 SQLite 需要驱动、schema 和 DAO；自定义 YAML/JSON 重复平台能力；`.idea` 文件违反用户项目只读边界。
+**Alternatives considered**: 参考插件 的 SQLite 需要驱动、schema 和 DAO；自定义 YAML/JSON 重复平台能力；`.idea` 文件违反用户项目只读边界。
 
 ## Decision 3: 扁平状态 bean 与版本字段
 
@@ -48,8 +48,8 @@
 
 **Alternatives considered**: TTL 不能识别真实源码变化；文件监听器重复 modification tracker；工具窗口打开后总后台刷新会改变现有刷新行为。
 
-## InterfaceX reference findings
+## 参考插件行为
 
-- InterfaceX 在无显式刷新时先调用 `ScanResultCacheLoader.loadFromCache()`；缓存缺失时扫描，手动刷新时直接后台扫描。
+- 参考插件在无显式刷新时先调用 `ScanResultCacheLoader.loadFromCache()`；缓存缺失时扫描，手动刷新时直接后台扫描。
 - 完整扫描由 `ScanResultPersister.persist()` 保存，缓存条目携带类名、方法名和签名以恢复导航。
 - 本功能保留其“缓存优先、刷新更新、缓存导航”的行为，但不复制 SQLite、全局用户目录、`Task.Backgroundable`、原子扫描标记或树数据源 UI。

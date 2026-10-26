@@ -48,21 +48,184 @@ public class RabbitMqEndpointParserTest extends BasePlatformTestCase {
                 .parseAnchor(identifier("send"), new LinkedHashSet<>()).isEmpty());
     }
 
-    public void testQueueBuilderDurableCreatesQueueDeclarationEndpoint() {
-        myFixture.addFileToProject("com/dhl/common/constant/CdtcDockingQueueConstants.java", """
-                package com.dhl.common.constant;
-                public class CdtcDockingQueueConstants {
-                    public static final String ACCOMPANYING_DOCUMENTS_QUEUE = "cdtc.ib.documents";
+    public void testDelegatingOverloadsKeepBothProducerDestinations() {
+        myFixture.addFileToProject("OverloadedPublisher.java", """
+                class OverloadedPublisher {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    void publish(String exchange, String key, Object body) {
+                        template.convertAndSend(exchange, key, body);
+                    }
+                    void publish(String exchange, Object body) {
+                        this.publish(exchange, "", body);
+                    }
                 }
                 """);
-        myFixture.configureByText("CdtcQueueMqConfiguration.java", """
-                import com.dhl.common.constant.CdtcDockingQueueConstants;
-                class CdtcQueueMqConfiguration {
+        myFixture.configureByText("OverloadCase.java", """
+                class OverloadCase {
+                    OverloadedPublisher publisher;
+                    void sync(java.util.List<String> items) {
+                        String exchange = "business.exchange";
+                        items.forEach(body -> {
+                            publisher.publish("risk.exchange", "risk.route", body);
+                            publisher.publish(exchange, body);
+                        });
+                    }
+                }
+                """);
+        RabbitMqEndpointParser parser = new RabbitMqEndpointParser(new MqValueResolver(getProject()));
+        var calls = com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(
+                        myFixture.getFile(), PsiIdentifier.class).stream()
+                .filter(item -> "publish".equals(item.getText())).toList();
+
+        assertEquals(2, calls.size());
+        MqEndpoint risk = parser.parseAnchor(calls.get(0), new LinkedHashSet<>()).orElseThrow();
+        MqEndpoint business = parser.parseAnchor(calls.get(1), new LinkedHashSet<>()).orElseThrow();
+        assertEquals("risk.exchange", risk.destination().exchange());
+        assertEquals("risk.route", risk.destination().routingKey());
+        assertEquals("business.exchange", business.destination().exchange());
+        assertEquals("", business.destination().routingKey());
+        assertEquals(MqEndpoint.ResolutionState.STATIC, business.resolutionState());
+        List<MqEndpoint> producers = collectEndpoints().stream()
+                .filter(endpoint -> endpoint.role() == MqEndpoint.Role.PRODUCER).toList();
+        assertEquals(2, producers.size());
+        assertTrue(producers.stream().allMatch(endpoint -> "OverloadCase.java".equals(endpoint.fileName())));
+    }
+
+    public void testNestedWrappersMapReorderedParametersAndStopCycles() {
+        myFixture.addFileToProject("NestedPublisher.java", """
+                class NestedPublisher {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    void publish(Object body, String key, String exchange) {
+                        forward(exchange, body, key);
+                    }
+                    void forward(String exchange, Object body, String key) {
+                        retry(exchange, key, body);
+                        template.convertAndSend(exchange, key, body);
+                    }
+                    void retry(String exchange, String key, Object body) {
+                        forward(exchange, body, key);
+                    }
+                }
+                """);
+        myFixture.configureByText("NestedCase.java", """
+                class NestedCase {
+                    NestedPublisher publisher;
+                    void sync() { publisher.publish(new Object(), "nested.route", "nested.exchange"); }
+                }
+                """);
+
+        MqEndpoint endpoint = new RabbitMqEndpointParser(new MqValueResolver(getProject()))
+                .parseAnchor(identifier("publish"), new LinkedHashSet<>()).orElseThrow();
+
+        assertEquals("nested.exchange", endpoint.destination().exchange());
+        assertEquals("nested.route", endpoint.destination().routingKey());
+        List<MqEndpoint> producers = collectEndpoints().stream()
+                .filter(item -> item.role() == MqEndpoint.Role.PRODUCER).toList();
+        assertEquals(1, producers.size());
+        assertEquals("NestedCase.java", producers.get(0).fileName());
+    }
+
+    public void testRepeatedNonMqBranchesDoNotExpandExponentially() {
+        StringBuilder source = new StringBuilder("class RepeatedCalls {\n");
+        source.append("void left0(String value) {} void right0(String value) {}\n");
+        for (int level = 1; level <= 20; level++) {
+            source.append("void left").append(level).append("(String value) { left")
+                    .append(level - 1).append("(value); right").append(level - 1).append("(value); }\n");
+            source.append("void right").append(level).append("(String value) { left")
+                    .append(level - 1).append("(value); right").append(level - 1).append("(value); }\n");
+        }
+        myFixture.addFileToProject("RepeatedCalls.java", source.append('}').toString());
+        myFixture.configureByText("RepeatedCase.java", """
+                class RepeatedCase {
+                    RepeatedCalls calls;
+                    void run() { calls.left20("value"); }
+                }
+                """);
+        RabbitMqEndpointParser parser = new RabbitMqEndpointParser(new MqValueResolver(getProject()));
+        PsiIdentifier sourceCall = identifier("left20");
+        long started = System.nanoTime();
+
+        assertTrue(parser.parseAnchor(sourceCall, new LinkedHashSet<>()).isEmpty());
+        assertTrue("Non-MQ call graph must not be expanded once per execution path",
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000);
+    }
+
+    public void testRepeatedMqBranchesDoNotExpandExponentially() {
+        StringBuilder source = new StringBuilder("class RepeatedMqCalls {\n");
+        source.append("org.springframework.amqp.rabbit.core.RabbitTemplate template;\n");
+        source.append("void left0(String value) { template.convertAndSend(value, \"left\", new Object()); }\n");
+        source.append("void right0(String value) { template.convertAndSend(value, \"right\", new Object()); }\n");
+        for (int level = 1; level <= 20; level++) {
+            source.append("void left").append(level).append("(String value) { left")
+                    .append(level - 1).append("(value); right").append(level - 1).append("(value); }\n");
+            source.append("void right").append(level).append("(String value) { left")
+                    .append(level - 1).append("(value); right").append(level - 1).append("(value); }\n");
+        }
+        myFixture.addFileToProject("RepeatedMqCalls.java", source.append('}').toString());
+        myFixture.configureByText("RepeatedMqCase.java", """
+                class RepeatedMqCase {
+                    RepeatedMqCalls calls;
+                    void run() { calls.left20("repeated.exchange"); }
+                }
+                """);
+        RabbitMqEndpointParser parser = new RabbitMqEndpointParser(new MqValueResolver(getProject()));
+        PsiIdentifier sourceCall = identifier("left20");
+        long started = System.nanoTime();
+
+        MqEndpoint endpoint = parser.parseAnchor(sourceCall, new LinkedHashSet<>()).orElseThrow();
+
+        assertEquals("repeated.exchange", endpoint.destination().exchange());
+        assertTrue("MQ call graph must not be expanded once per execution path",
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000);
+    }
+
+    public void testNonMqAndPayloadOnlyCallsAreNotProducerWrappers() {
+        myFixture.addFileToProject("OtherMethods.java", """
+                class OtherMethods {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    void notMq(String value) { notMq(value); }
+                    void publish(String exchange, String key, Object body) {
+                        template.convertAndSend(exchange, key, body);
+                    }
+                    void business(String body) { publish("fixed.exchange", "fixed.route", body); }
+                }
+                """);
+        myFixture.configureByText("NonMqCase.java", """
+                class NonMqCase {
+                    OtherMethods methods;
+                    void run() {
+                        methods.notMq("value");
+                        methods.business("body");
+                        methods.missing("unknown");
+                    }
+                }
+                """);
+        RabbitMqEndpointParser parser = new RabbitMqEndpointParser(new MqValueResolver(getProject()));
+
+        assertTrue(parser.parseAnchor(identifier("notMq"), new LinkedHashSet<>()).isEmpty());
+        assertTrue(parser.parseAnchor(identifier("business"), new LinkedHashSet<>()).isEmpty());
+        assertTrue(parser.parseAnchor(identifier("missing"), new LinkedHashSet<>()).isEmpty());
+        List<MqEndpoint> producers = collectEndpoints().stream()
+                .filter(endpoint -> endpoint.role() == MqEndpoint.Role.PRODUCER).toList();
+        assertEquals(1, producers.size());
+        assertEquals("business", producers.get(0).memberName());
+    }
+
+    public void testQueueBuilderDurableCreatesQueueDeclarationEndpoint() {
+        myFixture.addFileToProject("org/example/common/constant/DocumentQueueConstants.java", """
+                package org.example.common.constant;
+                public class DocumentQueueConstants {
+                    public static final String DOCUMENTS_QUEUE = "documents.queue";
+                }
+                """);
+        myFixture.configureByText("DocumentQueueConfiguration.java", """
+                import org.example.common.constant.DocumentQueueConstants;
+                class DocumentQueueConfiguration {
                     org.springframework.amqp.rabbit.core.RabbitAdmin admin;
-                    org.springframework.amqp.core.Queue accompanyingDocumentsQueue() {
+                    org.springframework.amqp.core.Queue documentsQueue() {
                         org.springframework.amqp.core.Queue queue =
                             org.springframework.amqp.core.QueueBuilder.durable(
-                                CdtcDockingQueueConstants.ACCOMPANYING_DOCUMENTS_QUEUE).quorum().build();
+                                DocumentQueueConstants.DOCUMENTS_QUEUE).quorum().build();
                         admin.declareQueue(queue);
                         return queue;
                     }
@@ -74,8 +237,8 @@ public class RabbitMqEndpointParserTest extends BasePlatformTestCase {
                 .orElseThrow();
 
         assertEquals(MqEndpoint.Role.DECLARATION, endpoint.role());
-        assertEquals("cdtc.ib.documents", endpoint.destination().queue());
-        assertEquals("accompanyingDocumentsQueue", endpoint.memberName());
+        assertEquals("documents.queue", endpoint.destination().queue());
+        assertEquals("documentsQueue", endpoint.memberName());
     }
 
     public void testCollectEndpointsKeepsRabbitBindingSource() {
@@ -118,8 +281,8 @@ public class RabbitMqEndpointParserTest extends BasePlatformTestCase {
     public void testQueueBuilderMapArgumentsExposeDelayQueueSettings() {
         myFixture.addFileToProject("QueueConstants.java", """
                 class QueueConstants {
-                    static final String QUEUE = "write-off.queue";
-                    static final String DEAD_EXCHANGE = "write-off.dead.exchange";
+                    static final String QUEUE = "orders.delay.queue";
+                    static final String DEAD_EXCHANGE = "orders.dead.exchange";
                     static final long DELAY_TIME = 300000L;
                 }
                 """);
@@ -143,7 +306,7 @@ public class RabbitMqEndpointParserTest extends BasePlatformTestCase {
 
         assertNotNull(settings);
         assertEquals(MqDestination.RabbitQueueKind.DELAY, settings.kind());
-        assertEquals("write-off.dead.exchange", settings.deadLetterExchange());
+        assertEquals("orders.dead.exchange", settings.deadLetterExchange());
         assertFalse(settings.deadLetterRoutingKeyConfigured());
         assertEquals(Long.valueOf(300000L), settings.messageTtlMillis());
         assertTrue(settings.diagnostics().isEmpty());

@@ -35,9 +35,9 @@
 | Principle | Pre-Research | Post-Design | Evidence |
 |-----------|--------------|-------------|----------|
 | I. 最小范围与直接实现 | PASS | PASS | 仅修改 `MqTopologyPanel` 和现有 `MqTopologyPanelTest`；不新增生产类、接口、设计方式或中间层 |
-| II. 平台优先与证据驱动的复杂度 | PASS | PASS | 使用兼容 IDEA 2023.3+ 的标准 `JProgressBar`；不复制 InterfaceX 的后台任务结构，不使用覆盖式加载面板或自绘动画 |
+| II. 平台优先与证据驱动的复杂度 | PASS | PASS | 使用兼容 IDEA 2023.3+ 的标准 `JProgressBar`；不复制 参考插件 的后台任务结构，不使用覆盖式加载面板或自绘动画 |
 | III. PSI、索引与并发安全 | PASS | PASS | 现有 NBRA/smart-mode/项目失效主链不变；进度状态只在现有 EDT 入口和最新回调中更新 |
-| IV. 用户项目只读与运行时隔离 | PASS | PASS | 功能只修改插件内 UI；`D:\github\interfacex` 保持只读；继续执行 broker 隔离与文件哈希门禁 |
+| IV. 用户项目只读与运行时隔离 | PASS | PASS | 功能只修改插件内 UI；`<reference-project>` 保持只读；继续执行 broker 隔离与文件哈希门禁 |
 | V. 测试先行与量化证据 | PASS | PASS | 先扩展受控 supplier UI 测试，再修改面板；focused、heavy 回归、完整测试、Verifier、sandbox 和首次使用者验证分开记录 |
 | VI. 可追踪的增量交付 | PASS | PASS | 三个用户故事、FR-001–FR-011 和 SC-001–SC-006 均映射到状态矩阵、测试或人工验收步骤 |
 
@@ -140,7 +140,7 @@ src/test/java/cn/luckyh/mqx/
 - 不修改 `refreshRequestId` 最新结果规则、NBRA/smart-mode/项目失效链、endpoint 扫描和 tree model 构建逻辑。
 - 不修改模块折叠、搜索、类型筛选、数量、动态提示、源码指针和双击导航行为。
 - 不新增取消、暂停、自动刷新、阶段进度、百分比、完成通知或其他消息系统进度提示。
-- 不修改 `D:\github\interfacex` 或 `D:\github\feignx-plugin`。
+- 不修改 `<reference-project>` 或 `<reference-plugin>`。
 - 不连接 broker，不写入用户项目，不执行项目业务代码。
 
 ## Risks and Controls
@@ -152,7 +152,7 @@ src/test/java/cn/luckyh/mqx/
 - **进度组件遮挡或引发布局跳动**: 使用底部独立状态行和平台组件，不采用覆盖层；sandbox 对窄工具窗口和出现/消失状态进行目视检查。
 - **快速刷新导致闪烁**: 不新增延时计时器；快速完成允许提示短暂或不可感知，但结束后必须无残留。
 - **平台版本兼容**: `JProgressBar` 已在 IDEA 2023.3 与 2026.2.1 编译和 Plugin Verifier 中确认兼容。
-- **范围扩张到后台任务体系**: 不采用 InterfaceX 的 `Task.Backgroundable`/`ProgressIndicator` 扫描结构，因为现有 NBRA 已满足索引和线程边界。
+- **范围扩张到后台任务体系**: 不采用 参考插件 的 `Task.Backgroundable`/`ProgressIndicator` 扫描结构，因为现有 NBRA 已满足索引和线程边界。
 
 ## Verification Design
 

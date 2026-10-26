@@ -160,7 +160,7 @@ parser 中只增加可命名的参数收集与值解析私有步骤，不增加�
 - 不修改 `MqEndpoint` 角色、`MqEndpointMatcher` 匹配实现、gutter 行标、刷新 action、工具窗口注册、plugin.xml、依赖或插件版本。
 - 不新增 `x-delayed-message`、消息级 `x-delay`、重试队列、消息重放或运行时 RabbitMQ 管理功能。
 - 不修改 Kafka、RocketMQ parser 和现有普通 RabbitMQ producer/consumer 行为。
-- 不修改 `G:\project\huimor\clearance-server` 参考源码及其他工作区已有未提交变更。
+- 不修改 `<sample-project>` 参考源码及其他工作区已有未提交变更。
 - 不执行用户 Spring 配置，不连接 broker，不写用户项目。
 
 ## Risks and Controls

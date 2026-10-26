@@ -32,4 +32,4 @@
 ## Notes
 
 - Validation iteration 1: 16/16 items passed; no clarification marker or unresolved scope decision remains.
-- InterfaceX is retained as a read-only behavioral reference only; database and background-task implementation details are explicitly outside scope.
+- The external plugin remains a read-only behavioral reference; its database and background-task implementation details are explicitly outside scope.

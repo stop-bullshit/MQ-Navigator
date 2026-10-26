@@ -45,6 +45,10 @@ public final class MqLineMarkerProvider extends LineMarkerProviderDescriptor {
         }
 
         MqEndpoint source = endpoint.get();
+        // 逻辑变动: 队列声明保留在拓扑侧栏且不显示收发端跳转图标-20261023-1204-01
+        if (source.role() == MqEndpoint.Role.DECLARATION) {
+            return null;
+        }
         Project project = element.getProject();
         var pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer(element);
         GutterIconNavigationHandler<PsiElement> handler = (event, ignored) -> {
@@ -97,10 +101,17 @@ public final class MqLineMarkerProvider extends LineMarkerProviderDescriptor {
                 notify(project, "MQ targets are no longer valid", NotificationType.WARNING);
                 return;
             }
+            MqEndpoint.Role targetRole = outcome.targets().get(0).role();
+            boolean sameRole = outcome.targets().stream().allMatch(target -> target.role() == targetRole);
+            String targetName = sameRole ? switch (targetRole) {
+                case CONSUMER -> "consumer";
+                case PRODUCER -> "producer";
+                default -> "target";
+            } : "target";
             var popup = NavigationUtil.getPsiElementPopup(
                     () -> targets,
                     new MqTargetRenderer(outcome.targets()),
-                    "MQ navigation targets",
+                    "Choose MQ " + targetName + " (" + targets.size() + ")",
                     project);
             if (popupPoint != null) {
                 popup.show(popupPoint);

@@ -52,10 +52,20 @@ tasks.withType<JavaCompile>().configureEach {
     options.release = 17
 }
 
+tasks.processResources {
+    from(listOf("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+        into("META-INF")
+    }
+    from("licenses") {
+        into("META-INF/licenses")
+    }
+}
+
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
             sinceBuild = "233"
+            untilBuild = "262.*"
         }
     }
 
@@ -74,7 +84,8 @@ tasks.test {
 tasks.register("buildRelease") {
     group = "build"
     description = "Builds a release plugin and advances the next patch version"
-    dependsOn("buildPlugin")
+    // 逻辑变动: 本地正式构建先通过测试结构与兼容性检查-20261026-1743-01
+    dependsOn("test", "verifyPluginProjectConfiguration", "verifyPluginStructure", "buildPlugin", "verifyPlugin")
     doLast {
         val nextPluginVersion = "${pluginVersionParts[0]}.${pluginVersionParts[1]}.${pluginVersionParts[2].toInt() + 1}"
         val propertiesFile = layout.projectDirectory.file("gradle.properties").asFile

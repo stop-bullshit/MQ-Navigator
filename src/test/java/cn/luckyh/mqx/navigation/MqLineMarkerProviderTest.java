@@ -8,6 +8,8 @@ import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.psi.PsiIdentifier;
 import com.intellij.psi.SmartPointerManager;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
+import cn.luckyh.mqx.model.MqDestination;
+import cn.luckyh.mqx.model.MqEndpoint;
 
 import java.nio.file.Path;
 import java.util.concurrent.Future;
@@ -53,6 +55,38 @@ public class MqLineMarkerProviderTest extends BasePlatformTestCase {
         assertNotNull(new MqLineMarkerProvider().getLineMarkerInfo(identifier));
     }
 
+    public void testBothRabbitProducerOverloadsHaveMarkersInsideLambda() {
+        myFixture.addFileToProject("RabbitPublisher.java", """
+                class RabbitPublisher {
+                    org.springframework.amqp.rabbit.core.RabbitTemplate template;
+                    void publish(String exchange, String key, Object body) {
+                        template.convertAndSend(exchange, key, body);
+                    }
+                    void publish(String exchange, Object body) { publish(exchange, "", body); }
+                }
+                """);
+        myFixture.configureByText("RabbitMarkerCase.java", """
+                class RabbitMarkerCase {
+                    RabbitPublisher publisher;
+                    void sync(java.util.List<String> items) {
+                        items.forEach(body -> {
+                            publisher.publish("risk.exchange", "risk.route", body);
+                            publisher.publish("business.exchange", body);
+                        });
+                    }
+                }
+                """);
+        var identifiers = com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(
+                        myFixture.getFile(), PsiIdentifier.class).stream()
+                .filter(item -> "publish".equals(item.getText())).toList();
+        MqLineMarkerProvider provider = new MqLineMarkerProvider();
+
+        assertEquals(2, identifiers.size());
+        for (PsiIdentifier identifier : identifiers) {
+            assertNotNull(provider.getLineMarkerInfo(identifier));
+        }
+    }
+
     public void testClassLevelConsumersHaveMarkers() {
         myFixture.configureByText("ClassConsumers.java", """
                 @org.springframework.amqp.rabbit.annotation.RabbitListener(queues = "orders")
@@ -94,9 +128,54 @@ public class MqLineMarkerProviderTest extends BasePlatformTestCase {
         MqTargetRenderer renderer = new MqTargetRenderer(outcome.targets());
         var target = outcome.targets().get(0).sourcePointer().getElement();
         assertNotNull(target);
-        assertTrue(renderer.getElementText(target).contains("[KAFKA]"));
-        assertTrue(renderer.getElementText(target).contains("RendererCase.java"));
-        assertTrue(renderer.getElementText(target).contains("topic=orders"));
+        assertEquals("RendererCase#consumeOne", renderer.getElementText(target));
+        assertTrue(renderer.getContainerText(target).contains("topic=orders"));
+        assertTrue(renderer.getContainerText(target).contains("group=first"));
+    }
+
+    public void testRabbitTargetsShowDistinctMethodsModulesAndQueueSuffixes() {
+        myFixture.configureByText("TargetLabels.java", """
+                class EventListener { void orderStatusChanged(Object message) {} }
+                class BillingListener { void processData(Object message) {} }
+                """);
+        var identifiers = com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(
+                myFixture.getFile(), PsiIdentifier.class);
+        PsiIdentifier event = identifiers.stream()
+                .filter(item -> "orderStatusChanged".equals(item.getText())).findFirst().orElseThrow();
+        PsiIdentifier billing = identifiers.stream()
+                .filter(item -> "processData".equals(item.getText())).findFirst().orElseThrow();
+        var pointers = SmartPointerManager.getInstance(getProject());
+        MqEndpoint eventTarget = new MqEndpoint("event", MqEndpoint.SystemType.RABBITMQ,
+                MqEndpoint.Role.CONSUMER,
+                MqDestination.rabbitConsumer("orders.status",
+                        "orders.status.data.process", java.util.List.of(), "fanout"),
+                MqEndpoint.ResolutionState.STATIC, null, pointers.createSmartPsiElementPointer(event),
+                "sample-project.order-processing.main", "TargetLabels.java",
+                "EventListener", "orderStatusChanged");
+        MqEndpoint billingTarget = new MqEndpoint("billing", MqEndpoint.SystemType.RABBITMQ,
+                MqEndpoint.Role.CONSUMER,
+                MqDestination.rabbitConsumer("orders.status",
+                        "orders.status.billing.calc", java.util.List.of(), "fanout"),
+                MqEndpoint.ResolutionState.STATIC, null, pointers.createSmartPsiElementPointer(billing),
+                "sample-project.billing.billing-service.main", "TargetLabels.java",
+                "BillingListener", "processData");
+        MqTargetRenderer renderer = new MqTargetRenderer(java.util.List.of(eventTarget, billingTarget));
+
+        assertEquals("EventListener#orderStatusChanged", renderer.getElementText(event));
+        assertEquals("order-processing · queue data.process", renderer.getContainerText(event));
+        assertEquals("BillingListener#processData", renderer.getElementText(billing));
+        assertEquals("billing-service · queue billing.calc", renderer.getContainerText(billing));
+
+        MqEndpoint unrelatedQueue = new MqEndpoint("unrelated", MqEndpoint.SystemType.RABBITMQ,
+                MqEndpoint.Role.CONSUMER,
+                MqDestination.rabbitConsumer("orders.status", "another.queue",
+                        java.util.List.of(), "fanout"),
+                MqEndpoint.ResolutionState.STATIC, null, pointers.createSmartPsiElementPointer(billing),
+                "sample-project.billing.billing-service.main", "TargetLabels.java",
+                "BillingListener", "processData");
+        MqTargetRenderer fullQueueRenderer = new MqTargetRenderer(java.util.List.of(eventTarget, unrelatedQueue));
+        assertEquals("order-processing · queue orders.status.data.process",
+                fullQueueRenderer.getContainerText(event));
     }
 
     public void testSameSourcePointerUsesCommittedCurrentState() throws Exception {
@@ -135,7 +214,7 @@ public class MqLineMarkerProviderTest extends BasePlatformTestCase {
         assertNotNull(cn.luckyh.mqx.ui.MqToolWindowService.getInstance(getProject()));
     }
 
-    public void testRabbitQueueDeclarationHasMarker() {
+    public void testRabbitQueueDeclarationHasNoProducerConsumerMarker() {
         myFixture.configureByText("QueueDeclarationMarker.java", """
                 class QueueDeclarationMarker {
                     org.springframework.amqp.core.Queue declareQueue() {
@@ -148,6 +227,6 @@ public class MqLineMarkerProviderTest extends BasePlatformTestCase {
                 .filter(item -> "durable".equals(item.getText()))
                 .findFirst().orElseThrow();
 
-        assertNotNull(new MqLineMarkerProvider().getLineMarkerInfo(durable));
+        assertNull(new MqLineMarkerProvider().getLineMarkerInfo(durable));
     }
 }

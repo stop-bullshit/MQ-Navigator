@@ -13,14 +13,12 @@ public final class MqEndpointMatcher {
         if (first.system() != second.system()) {
             return MatchKind.NONE;
         }
-        if (first.role() == MqEndpoint.Role.BINDING || second.role() == MqEndpoint.Role.BINDING
+        // 逻辑变动: 队列声明只参与拓扑计算不充当发送或消费跳转目标-20261023-1204-01
+        if (first.role() == MqEndpoint.Role.DECLARATION || second.role() == MqEndpoint.Role.DECLARATION
+                || first.role() == MqEndpoint.Role.BINDING || second.role() == MqEndpoint.Role.BINDING
                 || first.role() == MqEndpoint.Role.EXCHANGE_DECLARATION
                 || second.role() == MqEndpoint.Role.EXCHANGE_DECLARATION) {
             return MatchKind.NONE;
-        }
-        if (first.role() == MqEndpoint.Role.DECLARATION
-                || second.role() == MqEndpoint.Role.DECLARATION) {
-            return matchDeclaration(first, second);
         }
         if (first.role() == MqEndpoint.Role.CONSUMER
                 && second.role() == MqEndpoint.Role.PRODUCER) {
@@ -29,24 +27,6 @@ public final class MqEndpointMatcher {
         if (first.role() == MqEndpoint.Role.PRODUCER
                 && second.role() == MqEndpoint.Role.CONSUMER) {
             return match(first.system(), first.destination(), second.destination());
-        }
-        return MatchKind.NONE;
-    }
-
-    private MatchKind matchDeclaration(MqEndpoint first, MqEndpoint second) {
-        if (first.system() != MqEndpoint.SystemType.RABBITMQ
-                || first.role() == second.role()) {
-            return MatchKind.NONE;
-        }
-        MqEndpoint declaration = first.role() == MqEndpoint.Role.DECLARATION ? first : second;
-        MqEndpoint other = declaration == first ? second : first;
-        if (other.role() == MqEndpoint.Role.PRODUCER) {
-            return matchRabbit(other.destination(), declaration.destination());
-        }
-        if (other.role() == MqEndpoint.Role.CONSUMER
-                && declaration.destination().queue() != null
-                && declaration.destination().queue().equals(other.destination().queue())) {
-            return MatchKind.EXACT;
         }
         return MatchKind.NONE;
     }
@@ -87,25 +67,28 @@ public final class MqEndpointMatcher {
         if (routingKey == null) {
             return false;
         }
-        StringBuilder regex = new StringBuilder("^");
-        String[] parts = pattern.split("\\.", -1);
-        for (int index = 0; index < parts.length; index++) {
-            if (index > 0) {
-                regex.append("\\.");
-            }
-            if ("*".equals(parts[index])) {
-                regex.append("[^.]+");
-            } else if ("#".equals(parts[index])) {
-                if (index == 0 && parts.length > 1) {
-                    regex.append("(?:[^.]+\\.)*");
-                    continue;
+        String[] bindingWords = pattern.isEmpty() ? new String[0] : pattern.split("\\.", -1);
+        String[] routingWords = routingKey.isEmpty() ? new String[0] : routingKey.split("\\.", -1);
+        boolean[] matched = new boolean[routingWords.length + 1];
+        matched[0] = true;
+        // 逻辑变动: topic井号按零个或多个完整路由段匹配-20261023-1204-01
+        for (String bindingWord : bindingWords) {
+            boolean[] next = new boolean[routingWords.length + 1];
+            if ("#".equals(bindingWord)) {
+                next[0] = matched[0];
+                for (int index = 1; index < next.length; index++) {
+                    next[index] = matched[index]
+                            || (!routingWords[index - 1].isEmpty() && next[index - 1]);
                 }
-                regex.append("(?:[^.]+(?:\\.|$))*");
             } else {
-                regex.append(Pattern.quote(parts[index]));
+                for (int index = 1; index < next.length; index++) {
+                    next[index] = matched[index - 1] && (bindingWord.equals(routingWords[index - 1])
+                            || "*".equals(bindingWord) && !routingWords[index - 1].isEmpty());
+                }
             }
+            matched = next;
         }
-        return routingKey.matches(regex.append('$').toString());
+        return matched[routingWords.length];
     }
 
     private MatchKind matchKafka(MqDestination producer, MqDestination consumer) {

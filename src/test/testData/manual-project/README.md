@@ -2,7 +2,7 @@
 
 Open `src/main/java/demo/MqExamples.java` after indexing completes.
 
-- Scenario A: use the `rabbitDefault`, `rabbitDirect`, `rabbitTopic`, and `rabbitFanout` producers. `QueueDeclarations.ordersQueue` exercises `QueueBuilder.durable(...)` navigation to the same-name listener. The two fanout consumers exercise the multiple-target popup; `rabbitUncertain` exercises headers diagnostics.
+- Scenario A: use the `rabbitDefault`, `rabbitDirect`, `rabbitTopic`, and `rabbitFanout` producers. `QueueDeclarations.ordersQueue` exercises `QueueBuilder.durable(...)` topology discovery: the declaration belongs in the Topology view and has no producer/consumer gutter marker. Producer and listener markers navigate to actual opposite endpoints. The two fanout consumers exercise the multiple-target popup; `rabbitUncertain` exercises headers diagnostics.
 - Scenario B: use `kafkaConfigured`, `kafkaStatic`, and `kafkaPatternAndGroups`. The two `shared-events` groups exercise multiple targets; `kafkaDynamic`, `kafkaExcluded`, and `kafkaInvalidPattern` exercise diagnostics and exclusions.
 - Scenario C: use `rocketSms` and `rocketEmail` with the TAG consumers. `RocketSqlConsumer` must remain uncertain because message properties are unavailable.
 - Scenario D: use `ValueExamples` for direct `@Value`, configuration ambiguity, a literal placeholder, SpEL, a local alias, a method return, and a method parameter.

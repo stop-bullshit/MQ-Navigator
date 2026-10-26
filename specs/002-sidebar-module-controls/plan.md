@@ -35,9 +35,9 @@
 | Principle | Pre-Research | Post-Design | Evidence |
 |-----------|--------------|-------------|----------|
 | I. 最小范围与直接实现 | PASS | PASS | 只修改 `MqTopologyPanel`、`RefreshMqIndexAction` 和相关测试；不新增生产类、接口、设计模式或中间层 |
-| II. 平台优先与证据驱动的复杂度 | PASS | PASS | 复用现有 `SimpleTree`、ActionToolbar、标准刷新图标和 NBRA；不复制 InterfaceX 的 AsyncTreeModel、缓存或扫描结构 |
+| II. 平台优先与证据驱动的复杂度 | PASS | PASS | 复用现有 `SimpleTree`、ActionToolbar、标准刷新图标和 NBRA；不复制 参考插件 的 AsyncTreeModel、缓存或扫描结构 |
 | III. PSI、索引与并发安全 | PASS | PASS | 扫描继续通过 NBRA 在 smart mode 执行，项目关闭时失效；请求序号的递增和比较都在 EDT，不使用线程、锁或原子状态 |
-| IV. 用户项目只读与运行时隔离 | PASS | PASS | 功能仅更新插件 UI；`interfacex` 保持只读参考；现有 broker 隔离测试和用户项目哈希检查继续作为门禁 |
+| IV. 用户项目只读与运行时隔离 | PASS | PASS | 功能仅更新插件 UI；`reference-plugin` 保持只读参考；现有 broker 隔离测试和用户项目哈希检查继续作为门禁 |
 | V. 测试先行与量化证据 | PASS | PASS | 新 UI 测试先覆盖折叠、筛选、刷新和过期回调；唯一 heavy 性能类扩展 50 模块/2,000 Rabbit 端点的可见刷新 p95；构建、测试、Verifier、sandbox 分开报告 |
 | VI. 可追踪的增量交付 | PASS | PASS | 三个用户故事分别映射到 UI 测试和人工场景，跨故事安全要求映射到现有 broker 与源码只读验证 |
 
@@ -143,7 +143,7 @@ src/test/java/cn/luckyh/mqx/
 - 不修改 Consumers、Producers、Topology、Queues、Bindings、Exchanges 的分组和匹配语义。
 - 不新增 Kafka/RocketMQ 工具窗口、全部展开/全部折叠、展开状态持久化或设置页。
 - 不删除当前可能被其他 UI 使用的图标资源，不做无关资源清理。
-- 不修改 `D:\github\interfacex` 或 `D:\github\feignx-plugin`。
+- 不修改 `<reference-project>` 或 `<reference-plugin>`。
 - 不连接 broker，不写入用户项目，不执行项目业务代码。
 
 ## Risks and Controls

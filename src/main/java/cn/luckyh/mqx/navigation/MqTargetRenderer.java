@@ -11,9 +11,30 @@ import java.util.List;
 public final class MqTargetRenderer extends PsiTargetPresentationRenderer<PsiElement> {
 
     private final List<MqEndpoint> endpoints;
+    private final String sharedQueuePrefix;
 
     public MqTargetRenderer(List<MqEndpoint> endpoints) {
         this.endpoints = List.copyOf(endpoints);
+        String commonQueue = null;
+        for (MqEndpoint endpoint : endpoints) {
+            String queue = endpoint.destination().queue();
+            if (queue == null || queue.isEmpty()) {
+                commonQueue = "";
+                break;
+            }
+            if (commonQueue == null) {
+                commonQueue = queue;
+                continue;
+            }
+            int length = Math.min(commonQueue.length(), queue.length());
+            int index = 0;
+            while (index < length && commonQueue.charAt(index) == queue.charAt(index)) {
+                index++;
+            }
+            commonQueue = commonQueue.substring(0, index);
+        }
+        int separator = commonQueue == null ? -1 : commonQueue.lastIndexOf('.');
+        sharedQueuePrefix = separator < 0 ? "" : commonQueue.substring(0, separator + 1);
     }
 
     @Override
@@ -22,14 +43,38 @@ public final class MqTargetRenderer extends PsiTargetPresentationRenderer<PsiEle
         if (endpoint == null) {
             return element.getText();
         }
-        return "[" + endpoint.system() + "] " + endpoint.moduleName() + " / " + endpoint.fileName()
-                + " : " + endpoint.className() + "#" + endpoint.memberName()
-                + " - " + endpoint.destination().summary();
+        String className = endpoint.className();
+        if (className.isEmpty()) {
+            className = endpoint.fileName();
+            if (className.endsWith(".java")) {
+                className = className.substring(0, className.length() - ".java".length());
+            }
+        }
+        String memberName = endpoint.memberName();
+        return memberName.isEmpty() || memberName.equals(className)
+                ? className : className + "#" + memberName;
     }
 
     @Override
     public String getContainerText(PsiElement element) {
-        return null;
+        MqEndpoint endpoint = endpointFor(element);
+        if (endpoint == null) {
+            return null;
+        }
+        String module = endpoint.moduleName();
+        if (module.endsWith(".main") || module.endsWith(".test")) {
+            module = module.substring(0, module.lastIndexOf('.'));
+        }
+        int separator = module.lastIndexOf('.');
+        if (separator >= 0) {
+            module = module.substring(separator + 1);
+        }
+        String queue = endpoint.destination().queue();
+        // 逻辑变动: 目标弹窗突出类方法并折叠重复队列前缀-20261023-1145-01
+        String destination = queue == null || queue.isEmpty()
+                ? endpoint.destination().summary()
+                : "queue " + (sharedQueuePrefix.isEmpty() ? queue : queue.substring(sharedQueuePrefix.length()));
+        return module.isEmpty() ? destination : module + " · " + destination;
     }
 
     @Override

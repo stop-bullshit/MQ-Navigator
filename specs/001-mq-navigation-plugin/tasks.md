@@ -9,7 +9,7 @@ description: "MQ Navigator implementation tasks"
 
 **Tests**: Constitution 要求 parser、匹配、缓存、导航、兼容性、性能和只读边界均有可执行证据。每个用户故事先增加能够暴露该故事缺失行为的测试并记录 red 结果，再开始对应实现。
 
-**Organization**: 任务按 US1-US4 及依赖顺序组织。所有修改限定在 `D:\github\mqx-plugin`；`D:\github\feignx-plugin` 仅作只读参考。
+**Organization**: 任务按 US1-US4 及依赖顺序组织。所有修改限定在 `<workspace>`；`<reference-plugin>` 仅作只读参考。
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -184,17 +184,17 @@ description: "MQ Navigator implementation tasks"
 
 ## Phase 9: RabbitMQ Module View and Enum Routing Keys
 
-**Purpose**: 修复 `CheckPointListener` 一类枚举 routing key 链路，并把 RabbitMQ 项目关系按模块和收发端展示、筛选。
+**Purpose**: 修复 `OrderEventListener` 一类枚举 routing key 链路，并把 RabbitMQ 项目关系按模块和收发端展示、筛选。
 
 - [X] T066 在 `MqValueResolverTest` 和 `MqNavigationServiceTest` 增加普通 getter、Lombok getter 等价枚举场景，以及 listener→binding→exchange→producer 完整回归
 - [X] T067 在 `MqValueResolver` 通用解析枚举常量无参 String getter 到构造参数的静态映射；无法证明时保持 dynamic，不写项目专用枚举名或 getter 名
 - [X] T068 在 `MqTopologyPanel` 改为模块→Consumers/Producers/Topology 分组，增加文本与类型筛选，并展示 consumer、binding、producer 的可导航关系
-- [X] T069 使用 `rabbitmq-seeklogo.svg` 作为 Tool Window 和刷新工具栏图标，并调整为 16px 尺寸
+- [X] T069 使用 16px Tool Window 和刷新工具栏图标；0.2.11 已用项目自有 MQ 图标替换早期第三方图标
 - [X] T069a 按 SemVer 将插件版本从 `0.1.0` 升级为 `0.2.0`，并同步构建产物与验证记录
 - [X] T069b 修复 Tool Window producer 节点首次双击只打开文件、再次双击才精确定位的问题，并按 SemVer 发布 `0.2.1`
 - [X] T069c 接入 `gutter-consumer.png`、`gutter-producer.png`、`mq-navigator-plugin-logo.png` 和 `mq-navigator-logo-lockup.png`，并按 SemVer 发布 `0.2.2`
 - [X] T069d 使用标准 `META-INF/pluginIcon.svg`，将 Tool Window、刷新动作和 gutter 图标统一切换为 SVG，并按 SemVer 发布 `0.2.3`
-- [ ] T070 在目标真实项目重新安装插件，验证 `CheckPointListener#parseEventHi` gutter 和侧边栏都能跳转到 `CheckPointHiServiceImpl` producer
+- [ ] T070 在目标真实项目重新安装插件，验证 `OrderEventListener#consumeOrderEvent` gutter 和侧边栏都能跳转到 `OrderEventService` producer
 
 ---
 
@@ -294,7 +294,7 @@ red gate：T018
 
 ### Scope Guardrails During Execution
 
-- 不修改 `D:\github\feignx-plugin`。
+- 不修改 `<reference-plugin>`。
 - 不增加 Kotlin/Groovy/UAST、自定义索引、PSI 监听器、自定义线程池、锁、第二套缓存、设置页或运行时 MQ 能力；RabbitMQ 工具窗口复用同一项目快照。
 - 仅 `MqEndpointParser` 使用接口，因为首版同时存在三个真实实现；`MqNavigationService` 保持 final 具体 project service。
 - 配置依赖仅存在于一次 `CachedValueProvider.Result` 计算，EndpointSnapshot 不保存裸 PsiFile。

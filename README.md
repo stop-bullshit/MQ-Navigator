@@ -2,40 +2,107 @@
 
 ![MQ Navigator](src/main/resources/icons/mq-navigator-logo-lockup.svg)
 
-MQ Navigator is an IntelliJ IDEA plugin for navigating between Java message producers and consumers in the current project.
+MQ Navigator is an IntelliJ IDEA plugin for navigating between Java message producers and consumers in the current project. It uses source code and local configuration, so no broker connection is required.
 
-## Supported Sources
+## Install
+
+1. Download `mqx-plugin-<version>.zip` from [GitHub Releases](https://github.com/stop-bullshit/mqx-plugin/releases). Choose the plugin ZIP under **Assets**, not GitHub's source-code archives.
+2. In IntelliJ IDEA, open **Settings / Preferences → Plugins → ⚙ → Install Plugin from Disk…**.
+3. Select the ZIP and restart the IDE if prompted.
+4. Open a Java project, import its Maven or Gradle dependencies, and wait for indexing to finish.
+
+The declared IDE range is **IntelliJ IDEA 2023.3 through 2026.2** (builds `233` through `262.*`), with Java support enabled. Automated compatibility checks target IDEA 2023.3 and 2026.2.1; see each release's notes for its verification results. Other IDE products and framework versions are not automatically covered by those checks.
+
+GitHub Releases provide installable packages. Availability on JetBrains Marketplace is not implied.
+
+## Use
+
+- Click the gutter icon beside a supported send call to find consumers, or beside a listener to find senders. One target opens directly; multiple targets use IDEA's selection popup.
+- If the destination is dynamic or no matching endpoint exists in the current project, clicking the icon shows a diagnostic without moving the editor.
+- Open **View → Tool Windows → MQ Navigator** to browse the **RabbitMQ** topology by module, consumer, producer, queue, binding, and exchange. Double-click a source node to open it.
+- Use the tool-window refresh button or **Tools → MQ Navigator → Rescan Endpoints** after source/configuration changes or when a restored snapshot looks stale.
+
+Queue and exchange declarations describe topology. They are not treated as senders or receivers and do not have producer/consumer gutter icons.
+
+## Supported sources
 
 | System | Producers | Consumers | Matching |
 |---|---|---|---|
-| RabbitMQ | `RabbitTemplate` / `AmqpTemplate` `send` and `convertAndSend`, plus source-level wrappers that directly delegate to them | `@RabbitListener` queues, declarations, and bindings | exchange plus direct/topic/fanout routing; `QueueBuilder.durable(...)` + `BindingBuilder.bind(...).to(...).with(...)` topology |
-| Kafka | `KafkaTemplate.send(String, ...)` | `@KafkaListener` topics and topicPattern | exact topic or full regular-expression match |
-| RocketMQ | `syncSend`, `asyncSend`, `sendOneWay` | `@RocketMQMessageListener` | topic plus TAG selector |
+| RabbitMQ / Spring AMQP | `RabbitTemplate` / `AmqpTemplate` `send` and `convertAndSend`; source-level wrappers and delegating overloads that forward destination parameters | `@RabbitListener` with queues, queue declarations, or bindings | exchange plus direct/topic/fanout routing, including `*` and `#`; static `QueueBuilder` / `BindingBuilder` / `ExchangeBuilder` topology |
+| Kafka / Spring Kafka | `KafkaTemplate.send(String, …)` | `@KafkaListener` topics and `topicPattern` | exact topic or full regular-expression match |
+| RocketMQ / RocketMQ Spring | `RocketMQTemplate.syncSend`, `asyncSend`, `sendOneWay` | `@RocketMQMessageListener` | topic plus TAG selector |
 
-String literals, Java compile-time constants, listener placeholders, direct `@Value` instance fields, and enum constant string getters such as `RoutingKey.ORDER_CREATED.getCode()` are supported when their values can be proven from source. Other runtime expressions, local aliases, method-return flow, SpEL, SQL92 properties, and external broker topology are reported without guessed navigation. RabbitMQ queue methods are linked to static exchange methods through programmatic `BindingBuilder` declarations, and all bindings for the same queue are retained.
+Recognition uses the public framework types and source-level parameter flow, not application package names, queue prefixes, or company-specific utility names. For example, a RabbitMQ wrapper named `MessagePublisher.publish` can be recognized if its source forwards the exchange/routing key to `RabbitTemplate.convertAndSend`.
 
-## Scope and Diagnostics
+### Destination values and configuration
 
-The gutter remains available when a destination is dynamic, invalid, ambiguous, or has no match; clicking it reports the reason without moving the editor. RabbitMQ `QueueBuilder.durable(...)` declarations can navigate through static `BindingBuilder.bind(...).to(...)` relationships to exchange-based producers; all bindings for one queue remain available as separate candidates. Headers/custom exchanges, anonymous queues, unresolved bean methods, and external broker topology remain uncertain. Kafka `sendDefault`, `ProducerRecord`, message headers, `topicPartitions`, wrappers, and cross-method topic flow are excluded. RocketMQ orderly, transaction, request/reply methods and SQL92 property matching are excluded. Kotlin, Groovy, UAST, library sources, and external repositories are outside the first release.
+- String literals, Java compile-time constants, source-provable enum string getters, and certain static local-variable alternatives are supported.
+- Listener placeholders and direct `@Value` instance fields support a single `${key}` or `${key:default}` expression. Values are read from the owning module's `application*` / `bootstrap*` properties or YAML files.
+- Different values for the same key are reported as ambiguous. The plugin does not select an active Spring profile or reproduce Spring's configuration-precedence rules.
+- RabbitMQ programmatic bindings supply the exchange and routing keys for queue-based listeners. Multiple bindings for one queue remain separate candidates.
 
-## Run
+## Limitations and known issues
+
+This is static navigation, not proof that a message is delivered at runtime. The plugin does not connect to RabbitMQ, Kafka, or RocketMQ and does not modify application source or configuration files.
+
+- Only Java source in the current IDEA project is scanned. Kotlin, Groovy, external repositories, and library-only source flow are outside the current scope.
+- Native MQ client APIs, Spring Cloud Stream, and programmatically registered listener containers are not supported.
+- Kafka `sendDefault`, `ProducerRecord`, message headers, `topicPartitions`, and custom wrappers are excluded. RocketMQ orderly, transactional, request/reply, SQL92 property matching, and custom wrappers are excluded.
+- Remote configuration services, environment variables, SpEL, arbitrary method-return flow, and runtime destination transformations cannot be resolved.
+- Headers/custom exchanges and incomplete topology may remain uncertain.
+- A snapshot restored after reopening a project can be stale if files changed while the IDE was closed. **Rescan Endpoints** forces a current scan.
+- Mutable local routing variables with conditional reassignments are not a full control-flow analysis and can miss or over-report alternatives.
+- Direct-exchange bindings with an explicitly empty routing key are not yet matched correctly.
+
+The tests include synthetic framework stubs and a small [manual sample project](src/test/testData/manual-project). They do not certify every Spring version or third-party application.
+
+## Build and verify
+
+Use **JDK 17** and the checked-in Gradle Wrapper. The first build downloads Gradle, IDEA test platforms, and Maven dependencies. A local broker is not needed.
+
+Windows PowerShell:
 
 ```powershell
-.\gradlew.bat test
+.\gradlew.bat test verifyPluginProjectConfiguration verifyPluginStructure
+.\gradlew.bat verifyPlugin
+.\gradlew.bat buildPlugin
 .\gradlew.bat runIde
 ```
 
-Open the `MQ Navigator` tool window to browse RabbitMQ endpoints grouped by module and then by Consumers, Producers, and Topology. Filter by module, class, queue, exchange, routing key, endpoint type, or unresolved state. Consumer and producer nodes also show their related bindings and opposite endpoints. Double-click any source node to open it. Existing gutter navigation remains available on Java producers, consumers, and queue declarations. One target opens directly; multiple targets use the IntelliJ target popup. Use the RabbitMQ refresh icon or `Tools > MQ Navigator > Rescan Endpoints` to invalidate the current project snapshot explicitly.
+macOS / Linux:
 
-The plugin does not connect to RabbitMQ, Kafka, or RocketMQ and does not modify project source or configuration files.
+```bash
+./gradlew test verifyPluginProjectConfiguration verifyPluginStructure
+./gradlew verifyPlugin
+./gradlew buildPlugin
+./gradlew runIde
+```
 
-## Versioning
+`buildPlugin` writes the installable ZIP to `build/distributions/`. `runIde` starts a separate development IDE; it does not install into your existing IDE. Tests and Plugin Verifier serve different purposes: tests exercise behavior, while the verifier checks binary compatibility with the configured IDEA builds.
 
-The plugin uses Semantic Versioning (`MAJOR.MINOR.PATCH`): compatible bug fixes increment `PATCH`, backward-compatible user-visible features increment `MINOR`, and breaking changes increment `MAJOR`. The next release version is stored as `pluginVersion` in `gradle.properties`.
+## Releases and versioning
+
+The project uses Semantic Versioning (`MAJOR.MINOR.PATCH`). `pluginVersion` in `gradle.properties` identifies the version built from that checkout.
 
 ```powershell
 .\gradlew.bat buildSnapshot  # Builds <version>-SNAPSHOT for local testing without changing pluginVersion
-.\gradlew.bat buildRelease   # Builds <version> and advances pluginVersion to the next PATCH version
+.\gradlew.bat buildRelease   # Verifies and builds <version>, then advances the next PATCH version locally
 ```
 
-Both packages are written to `build/distributions/`. `buildRelease` and `buildSnapshot` must be run separately.
+The same tasks are available as `./gradlew buildSnapshot` and `./gradlew buildRelease` on macOS/Linux. Run snapshot and release tasks separately. Neither task by itself publishes to GitHub or JetBrains Marketplace.
+
+A GitHub release tag such as `vX.Y.Z` must match the checkout's `pluginVersion=X.Y.Z`. The tag workflow verifies and packages that version without advancing it, then uploads the installable ZIP to GitHub Releases.
+
+## Contribute
+
+Bug reports with small, sanitized examples are welcome. Include the plugin version, IDEA build, framework versions, expected result, and actual result. See [CONTRIBUTING.md](CONTRIBUTING.md) for the local checks and reporting guidelines.
+
+## 中文快速开始
+
+从 [GitHub Releases](https://github.com/stop-bullshit/mqx-plugin/releases) 的 **Assets** 下载插件 ZIP，在 IDEA 的 **设置 → 插件 → ⚙ → 从磁盘安装插件** 中选择该文件，按提示重启。导入项目依赖并等待索引完成后，点击发送调用或监听方法旁的图标进行双向跳转；RabbitMQ 拓扑可在 **MQ Navigator** 工具窗口查看。
+
+插件面向常见 Java/Spring 写法，不依赖应用的公司包名或队列命名。它进行静态分析，不连接真实 MQ；动态配置、复杂表达式及上面的未支持写法可能无法定位。结果疑似过期时执行 **Tools → MQ Navigator → Rescan Endpoints**。
+
+## License
+
+[MIT](LICENSE). Framework names identify supported integrations; this project is not an official RabbitMQ, Kafka, RocketMQ, or JetBrains product.

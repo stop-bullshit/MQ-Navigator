@@ -56,7 +56,7 @@
 - 配置文件依赖由 `MqValueResolver` 的局部集合或 private/internal result record 在一次计算内收集，并传给 `CachedValueProvider.Result.create(...)`；发布的 `EndpointSnapshot` 不保存裸 `PsiFile`。
 - 不创建静态 `Map<basePath, ...>`、裸 PSI 长期缓存、手写 `PsiTreeChangeListener`、Recover 工具或自定义线程池。
 
-**Rationale**: PSI 与缓存都应按 project 隔离。平台缓存能统一处理源码和索引状态的失效，智能指针可以在重命名、移动和重解析后恢复位置。依赖只是缓存计算的输入，不应泄漏到长期快照模型。参考 FeignX 的当前监听链只更新类列表，没有闭环清理导航缓存，因此不能直接复制。
+**Rationale**: PSI 与缓存都应按 project 隔离。平台缓存能统一处理源码和索引状态的失效，智能指针可以在重命名、移动和重解析后恢复位置。依赖只是缓存计算的输入，不应泄漏到长期快照模型。参考插件的监听链只更新类列表，没有闭环清理导航缓存，因此不能直接复制。
 
 **Alternatives considered**:
 

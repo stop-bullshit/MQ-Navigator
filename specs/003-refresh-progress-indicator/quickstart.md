@@ -7,11 +7,11 @@
 - Windows PowerShell
 - JDK 17 用作 Gradle JVM
 - IntelliJ IDEA 2023.3 或更高版本
-- 工作目录：`D:\github\mqx-plugin`
+- 工作目录：`<workspace>`
 - 首次构建可访问 Gradle、JetBrains 和 Maven Central 依赖仓库
 
 ```powershell
-Set-Location 'D:\github\mqx-plugin'
+Set-Location '<workspace>'
 java -version
 Get-Content '.specify\feature.json'
 ```

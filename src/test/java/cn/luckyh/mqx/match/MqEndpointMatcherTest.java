@@ -29,6 +29,36 @@ public class MqEndpointMatcherTest {
     }
 
     @Test
+    public void topicHashMatchesZeroOrMoreRoutingSegments() {
+        MqDestination initQueue = MqDestination.rabbitConsumer("billing.events", "billing.queue",
+                List.of("#.init"), "topic");
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("billing.events", "calc.billing.init"), initQueue));
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("billing.events", "init"), initQueue));
+        assertEquals(MqEndpointMatcher.MatchKind.NONE, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("billing.events", "calc.billing.done"), initQueue));
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("orders", "order"),
+                MqDestination.rabbitConsumer("orders", "queue", List.of("order.#"), "topic")));
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("orders", "order.created"),
+                MqDestination.rabbitConsumer("orders", "queue", List.of("order.#"), "topic")));
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("orders", "order.created"),
+                MqDestination.rabbitConsumer("orders", "queue", List.of("order.#.created"), "topic")));
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("orders", "order.created"),
+                MqDestination.rabbitConsumer("orders", "queue", List.of("order.*"), "topic")));
+        assertEquals(MqEndpointMatcher.MatchKind.NONE, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("orders", "order"),
+                MqDestination.rabbitConsumer("orders", "queue", List.of("order.*"), "topic")));
+        assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(MqEndpoint.SystemType.RABBITMQ,
+                MqDestination.rabbitProducer("orders", ""),
+                MqDestination.rabbitConsumer("orders", "queue", List.of("#"), "topic")));
+    }
+
+    @Test
     public void matchesKafkaPatternAndRocketTag() {
         assertEquals(MqEndpointMatcher.MatchKind.EXACT, matcher.match(
                 MqEndpoint.SystemType.KAFKA,

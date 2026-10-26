@@ -8,7 +8,7 @@
 - `src/test/java/cn/luckyh/mqx/ui/MqTopologyPanelTest.java` SHA-256：`F0CEE3DBB2F2BBD2BF4E6A8838AA0F5B88FBFEF0144FD755C02D788D0DF46706`
 - 受保护生产文件：`src/main/java/cn/luckyh/mqx/action/RefreshMqIndexAction.java`、RabbitMQ endpoint 服务与解析/匹配实现、`src/main/resources/META-INF/plugin.xml`、`build.gradle.kts`、`gradle.properties`。
 - 受保护测试文件：`src/test/java/cn/luckyh/mqx/navigation/MqNavigationPerformanceTest.java`、broker 隔离测试、parser 与 matcher 测试。
-- 只读参考目录：`D:\github\interfacex`。
+- 只读参考目录：`<reference-project>`。
 
 ## Focused UI
 

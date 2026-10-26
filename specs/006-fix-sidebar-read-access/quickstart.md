@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Windows PowerShell
-- Repository root: `D:\github\mqx-plugin`
+- Repository root: `<workspace>`
 - Gradle Wrapper bundled with the repository
 - Existing dirty work from features 002–005 preserved
 

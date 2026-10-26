@@ -181,5 +181,5 @@ Task T012: 同步 specs/003-refresh-progress-indicator 下的设计与验证文�
 - `[US1]`、`[US2]`、`[US3]` 与 `spec.md` 的用户故事一一对应。
 - 每项任务包含准确文件路径；运行命令的结果统一写入 `verification.md`。
 - 不提交代码或创建分支，除非用户明确要求。
-- 不修改 `D:\github\interfacex`；该目录仅为只读参考。
+- 不修改 `<reference-project>`；该目录仅为只读参考。
 - 未执行的 sandbox、首次使用者或生产验证必须标记未验证。
