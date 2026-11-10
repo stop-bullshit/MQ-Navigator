@@ -63,9 +63,10 @@ tasks.processResources {
 
 intellijPlatform {
     pluginConfiguration {
+        // 插件安装范围覆盖IDEA2023.3至2026.3
         ideaVersion {
             sinceBuild = "233"
-            untilBuild = "262.*"
+            untilBuild = "263.*"
         }
     }
 
@@ -73,6 +74,8 @@ intellijPlatform {
         ides {
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2023.3")
             create(IntelliJPlatformType.IntellijIdea, "2026.2.1")
+            // 兼容性检查覆盖IDEA2026.3
+            create(IntelliJPlatformType.IntellijIdea, "2026.3")
         }
     }
 }

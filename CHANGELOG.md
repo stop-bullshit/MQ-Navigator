@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.14] - 2026-11-10
+
+### Fixed
+
+- Extended the declared IDE compatibility range through IntelliJ IDEA 2026.3 (build `263.*`).
+- Added IntelliJ IDEA 2026.3 to the binary compatibility verification targets.
+
 ## [0.2.13] - 2026-11-10
 
 ### Changed

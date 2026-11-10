@@ -11,7 +11,7 @@ MQ Navigator is an IntelliJ IDEA plugin for navigating between Java message prod
 3. Select the ZIP and restart the IDE if prompted.
 4. Open a Java project, import its Maven or Gradle dependencies, and wait for indexing to finish.
 
-The declared IDE range is **IntelliJ IDEA 2023.3 through 2026.2** (builds `233` through `262.*`), with Java support enabled. Automated compatibility checks target IDEA 2023.3 and 2026.2.1; see each release's notes for its verification results. Other IDE products and framework versions are not automatically covered by those checks.
+The declared IDE range is **IntelliJ IDEA 2023.3 through 2026.3** (builds `233` through `263.*`), with Java support enabled. Automated compatibility checks target IDEA 2023.3, 2026.2.1, and 2026.3; see each release's notes for its verification results. Other IDE products and framework versions are not automatically covered by those checks.
 
 GitHub Releases provide installable packages. Availability on JetBrains Marketplace is not implied.
 
