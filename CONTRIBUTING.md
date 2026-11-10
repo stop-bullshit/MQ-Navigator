@@ -4,7 +4,7 @@ Small bug fixes, reproducible reports, and focused support for additional MQ sou
 
 ## Report a bug
 
-Open an [issue](https://github.com/stop-bullshit/mqx-plugin/issues) with:
+Open an [issue](https://github.com/stop-bullshit/MQ-Navigator/issues) with:
 
 - MQ Navigator version and the full IntelliJ IDEA build number.
 - Operating system, build tool, and relevant Spring/MQ library versions.

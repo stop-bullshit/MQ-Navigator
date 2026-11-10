@@ -55,7 +55,10 @@ jobs:
         run: ./gradlew test verifyPluginProjectConfiguration verifyPluginStructure verifyPlugin buildPlugin --no-daemon
       - name: Calculate checksums
         working-directory: build/distributions
-        run: sha256sum *.zip > SHA256SUMS.txt
+        run: |
+          # GitHub发行附件统一命名后生成校验值
+          mv -- "MQ Navigator-${GITHUB_REF_NAME#v}.zip" "MQ-Navigator-${GITHUB_REF_NAME#v}.zip"
+          sha256sum *.zip > SHA256SUMS.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plugin-package
@@ -106,7 +109,8 @@ jobs:
               core.info('Release is already published: ' + release.html_url);
               return;
             }
-            for (const name of ['mqx-plugin-' + version + '.zip', 'SHA256SUMS.txt']) {
+            // 发行附件按MQ Navigator名称上传
+            for (const name of ['MQ-Navigator-' + version + '.zip', 'SHA256SUMS.txt']) {
               const existing = release.assets.find(asset => asset.name === name);
               if (existing) await github.rest.repos.deleteReleaseAsset({ ...repo, asset_id: existing.id });
               const data = fs.readFileSync('build/distributions/' + name);

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
+  <!-- 工具窗口标准尺寸保留消息导航轮廓 -->
+  <path d="M5 15V5L15 15V5" fill="none" stroke="#6C707E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="3.25" y="13.25" width="3.5" height="3.5" rx="1" fill="#6C707E"/>
+  <rect x="13.25" y="3.25" width="3.5" height="3.5" rx="1" fill="#6C707E"/>
+</svg>

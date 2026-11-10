@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.13] - 2026-11-10
+
+### Changed
+
+- Redesigned the plugin logo around an N-shaped route connecting two message endpoints.
+- Aligned the plugin and README logos, with monochrome 16px and 20px tool-window icons for light and dark themes.
+
+## [0.2.12] - 2026-11-10
+
+### Changed
+
+- Aligned the Gradle project name, plugin directory, and plugin JAR name with MQ Navigator.
+- Updated repository, source, and issue links to `stop-bullshit/MQ-Navigator`.
+- Updated the release workflow to publish `MQ-Navigator-0.2.12.zip` with matching SHA-256 filenames.
+
+### Distribution
+
+- Local builds produce `build/distributions/MQ Navigator-0.2.12.zip`.
+- GitHub release assets use `MQ-Navigator-0.2.12.zip`.
+- The plugin ID remains `cn.luckyh.mqx` so existing installations retain their identity.
+
 ## [0.2.11] - 2026-10-26
 
 ### Added

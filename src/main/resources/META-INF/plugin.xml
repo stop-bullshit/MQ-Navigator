@@ -1,7 +1,8 @@
 <idea-plugin>
     <id>cn.luckyh.mqx</id>
     <name>MQ Navigator</name>
-    <vendor url="https://github.com/stop-bullshit/mqx-plugin">luckyh</vendor>
+    <!-- 插件供应方链接指向MQ Navigator仓库 -->
+    <vendor url="https://github.com/stop-bullshit/MQ-Navigator">luckyh</vendor>
     <description><![CDATA[
         Navigate between RabbitMQ, Kafka, and RocketMQ producers and consumers in the current project.
     ]]></description>

@@ -5,4 +5,5 @@ pluginManagement {
     }
 }
 
-rootProject.name = "mqx-plugin"
+// 插件构建产物统一使用产品名称
+rootProject.name = "MQ Navigator"

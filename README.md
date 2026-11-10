@@ -6,7 +6,7 @@ MQ Navigator is an IntelliJ IDEA plugin for navigating between Java message prod
 
 ## Install
 
-1. Download `mqx-plugin-<version>.zip` from [GitHub Releases](https://github.com/stop-bullshit/mqx-plugin/releases). Choose the plugin ZIP under **Assets**, not GitHub's source-code archives.
+1. Download `MQ-Navigator-<version>.zip` from [GitHub Releases](https://github.com/stop-bullshit/MQ-Navigator/releases). Choose the plugin ZIP under **Assets**, not GitHub's source-code archives.
 2. In IntelliJ IDEA, open **Settings / Preferences → Plugins → ⚙ → Install Plugin from Disk…**.
 3. Select the ZIP and restart the IDE if prompted.
 4. Open a Java project, import its Maven or Gradle dependencies, and wait for indexing to finish.
@@ -78,7 +78,7 @@ macOS / Linux:
 ./gradlew runIde
 ```
 
-`buildPlugin` writes the installable ZIP to `build/distributions/`. `runIde` starts a separate development IDE; it does not install into your existing IDE. Tests and Plugin Verifier serve different purposes: tests exercise behavior, while the verifier checks binary compatibility with the configured IDEA builds.
+`buildPlugin` writes `MQ Navigator-<version>.zip` to `build/distributions/`, with `MQ Navigator` as the plugin directory and JAR base name. GitHub release assets use `MQ-Navigator-<version>.zip` so the downloaded filename matches `SHA256SUMS.txt`. `runIde` starts a separate development IDE; it does not install into your existing IDE. Tests and Plugin Verifier serve different purposes: tests exercise behavior, while the verifier checks binary compatibility with the configured IDEA builds.
 
 ## Releases and versioning
 
@@ -99,7 +99,7 @@ Bug reports with small, sanitized examples are welcome. Include the plugin versi
 
 ## 中文快速开始
 
-从 [GitHub Releases](https://github.com/stop-bullshit/mqx-plugin/releases) 的 **Assets** 下载插件 ZIP，在 IDEA 的 **设置 → 插件 → ⚙ → 从磁盘安装插件** 中选择该文件，按提示重启。导入项目依赖并等待索引完成后，点击发送调用或监听方法旁的图标进行双向跳转；RabbitMQ 拓扑可在 **MQ Navigator** 工具窗口查看。
+从 [GitHub Releases](https://github.com/stop-bullshit/MQ-Navigator/releases) 的 **Assets** 下载 `MQ-Navigator-<version>.zip`，在 IDEA 的 **设置 → 插件 → ⚙ → 从磁盘安装插件** 中选择该文件，按提示重启。导入项目依赖并等待索引完成后，点击发送调用或监听方法旁的图标进行双向跳转；RabbitMQ 拓扑可在 **MQ Navigator** 工具窗口查看。
 
 插件面向常见 Java/Spring 写法，不依赖应用的公司包名或队列命名。它进行静态分析，不连接真实 MQ；动态配置、复杂表达式及上面的未支持写法可能无法定位。结果疑似过期时执行 **Tools → MQ Navigator → Rescan Endpoints**。
 

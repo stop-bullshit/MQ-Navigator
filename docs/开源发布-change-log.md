@@ -1,5 +1,46 @@
 # 开源发布准备变更日志
 
+## [CHANGE-更新: 重设计MQ Navigator标志-20261110-1204-01]
+
+| 字段 | 内容 |
+| --- | --- |
+| 日期 | 2026-11-10 |
+| 版本 | 0.2.13 |
+| 触发需求 | 插件Logo重新设计，并在插件列表、工具窗口和README中保持一致 |
+
+**修改范围：**
+
+- `META-INF/pluginIcon.svg`、`icons/mq-navigator-plugin-logo.svg`：使用N形消息导航路径和两个端点，四周保留透明留白。
+- `icons/mq-navigator-toolwindow*.svg`：使用同一轮廓，提供16px/20px及浅色/深色单色版本。
+- `icons/mq-navigator-logo-lockup.svg`：同步新标志与产品名称组合。
+- `gradle.properties`、`CHANGELOG.md`：版本递增为 `0.2.13` 并记录图标调整。
+
+**边界：** 不修改消息识别、导航逻辑或gutter方向图标；保留已有名称统一改动。Marketplace已提交的 `0.2.12` 不受本地资源修改影响。
+
+**验证：** 使用IDE自身SVG渲染器核对40px/80px主图标与16px/20px浅深色工具窗口图标；7个SVG的尺寸、大小、纯矢量内容和品牌一致性检查通过。`verifyPluginProjectConfiguration verifyPluginStructure buildPlugin --offline` 通过，实际 `MQ Navigator-0.2.13.zip` 中7个图标资源与已检查源码一致。未实机重装；发布时从源码提交重新构建0.2.13，并核对实际上传文件的版本与图标。
+
+## [CHANGE-更新: 统一MQ Navigator发布名称-20261110-1134-01]
+
+| 字段 | 内容 |
+| --- | --- |
+| 日期 | 2026-11-10 |
+| 版本 | 0.2.12 |
+| 触发需求 | 插件构建产物与IDEA展示名称统一，并将GitHub仓库改为MQ-Navigator |
+
+**修改范围：**
+
+- `settings.gradle.kts`：根项目名使用 `MQ Navigator`，同步ZIP、包内目录和插件JAR名称。
+- `gradle.properties`：发布版本递增为 `0.2.12`。
+- `.github/workflows/release.yml`：GitHub附件使用 `MQ-Navigator-<version>.zip`，重命名后生成SHA-256并上传同名附件。
+- `README.md`、`CONTRIBUTING.md`、`src/main/resources/META-INF/plugin.xml`：更新当前安装说明和仓库链接。
+- `CHANGELOG.md`：记录0.2.12的名称调整和分发文件名。
+
+**边界：** 插件ID `cn.luckyh.mqx` 和Java包名继续用于已有安装识别；保留旧版本产物及历史名称记录。
+
+**仓库改名：** GitHub仓库已改为 `stop-bullshit/MQ-Navigator`，本地 `origin` 同步为 `https://github.com/stop-bullshit/MQ-Navigator.git`。
+
+**验证：** `verifyPluginProjectConfiguration verifyPluginStructure buildPlugin` 通过。实际ZIP根目录为 `MQ Navigator/`，插件JAR为 `MQ Navigator/lib/MQ Navigator-0.2.12.jar`；包内名称、版本、插件ID与新仓库链接均已核对。GitHub上传脚本JavaScript语法检查通过。未运行单元测试、全IDE版本兼容性检查或实机重装；未提交、推送代码或提交Marketplace审核。
+
 ## [CHANGE-更新: 补齐开源资料与发布门禁-20261026-1743-01]
 
 | 字段 | 内容 |
