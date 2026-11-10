@@ -45,8 +45,8 @@ import java.util.Set;
 @State(name = "MqNavigationEndpointCache", storages = @Storage(StoragePathMacros.CACHE_FILE))
 public final class MqNavigationService implements PersistentStateComponent<MqNavigationService.CacheState> {
 
-    // 逻辑变动: 升级发送封装解析后重建旧端点缓存-20261023-1125-01
-    private static final int CACHE_VERSION = 3;
+    // 枚举路由解析升级后重建旧端点缓存
+    private static final int CACHE_VERSION = 4;
     private static final Logger LOG = Logger.getInstance(MqNavigationService.class);
     private static final Comparator<MqEndpoint> ENDPOINT_ORDER = Comparator
             .comparing(MqEndpoint::moduleName)

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- Resolve enum-derived RabbitMQ routing keys at internal send calls using statically known project caller arguments and unique interface implementations.
+- Recognize source-proven enum code lookups, including Lombok getters and fields assigned from differently named constructor parameters.
+
+### Fixed
+
+- Keep unknown codes, ambiguous dispatch, runtime reassignment, and unsupported getter or constructor calculations unresolved.
+- Rebuild persisted endpoint snapshots after the routing resolver upgrade.
+
 ## [0.2.14] - 2026-11-10
 
 ### Fixed

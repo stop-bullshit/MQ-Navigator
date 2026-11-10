@@ -1,17 +1,22 @@
 package cn.luckyh.mqx.parser;
 
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.PsiAnnotation;
 import com.intellij.psi.PsiAnnotationMemberValue;
 import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiAssignmentExpression;
+import com.intellij.psi.PsiCodeBlock;
 import com.intellij.psi.PsiConditionalExpression;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiExpression;
 import com.intellij.psi.PsiIdentifier;
 import com.intellij.psi.PsiIfStatement;
 import com.intellij.psi.PsiLoopStatement;
+import com.intellij.psi.PsiLocalVariable;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiMethodCallExpression;
+import com.intellij.psi.PsiMethodReferenceExpression;
 import com.intellij.psi.PsiModifierListOwner;
 import com.intellij.psi.PsiNewExpression;
 import com.intellij.psi.PsiParameter;
@@ -22,6 +27,7 @@ import com.intellij.psi.PsiVariable;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AnnotatedElementsSearch;
 import com.intellij.psi.search.searches.MethodReferencesSearch;
+import com.intellij.psi.search.searches.OverridingMethodsSearch;
 import com.intellij.psi.util.InheritanceUtil;
 import com.intellij.psi.util.PsiUtil;
 import com.intellij.psi.util.PsiTreeUtil;
@@ -422,8 +428,10 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
         PsiParameter[] parameters = method.getParameterList().getParameters();
         PsiExpression[] arguments = call.getArgumentList().getExpressions();
         for (int index = 0; index < Math.min(parameters.length, arguments.length); index++) {
+            // 发送参数保留局部路由表达式及业务调用点上下文
             parameterValues.put(parameters[index],
-                    valueResolver.resolveExpressionAlternatives(arguments[index], dependencies));
+                    resolveWrapperExpressionAlternatives(arguments[index], Map.of(),
+                            dependencies, new LinkedHashSet<>(), new LinkedHashMap<>()));
         }
         return parseWrapperProducerEndpoints(anchor, method, parameterValues, dependencies,
                 new LinkedHashSet<>(), new LinkedHashMap<>());
@@ -478,11 +486,15 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
         List<MqValueResolver.ResolvedValue> exchanges;
         List<MqValueResolver.ResolvedValue> routingKeys;
         if (leadingStrings >= 2 && arguments.length > 1) {
-            exchanges = valueResolver.resolveExpressionAlternatives(arguments[0], dependencies);
-            routingKeys = valueResolver.resolveExpressionAlternatives(arguments[1], dependencies);
+            // 原生发送调用使用与封装发送一致的目的地上下文
+            exchanges = resolveWrapperExpressionAlternatives(
+                    arguments[0], Map.of(), dependencies, new LinkedHashSet<>(), new LinkedHashMap<>());
+            routingKeys = resolveWrapperExpressionAlternatives(
+                    arguments[1], Map.of(), dependencies, new LinkedHashSet<>(), new LinkedHashMap<>());
         } else {
             exchanges = List.of(MqValueResolver.ResolvedValue.staticValue(""));
-            routingKeys = valueResolver.resolveExpressionAlternatives(arguments[0], dependencies);
+            routingKeys = resolveWrapperExpressionAlternatives(
+                    arguments[0], Map.of(), dependencies, new LinkedHashSet<>(), new LinkedHashMap<>());
         }
         return producerEndpoints(anchor, exchanges, routingKeys);
     }
@@ -514,7 +526,8 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
                     PsiExpression[] arguments = templateCall.getArgumentList().getExpressions();
                     for (int index = 0; index < Math.min(parameters.length, arguments.length); index++) {
                         nestedValues.put(parameters[index], resolveWrapperExpressionAlternatives(
-                                arguments[index], parameterValues, dependencies, new LinkedHashSet<>()));
+                                arguments[index], parameterValues, dependencies,
+                                new LinkedHashSet<>(), new LinkedHashMap<>()));
                     }
                     endpoints.addAll(parseWrapperProducerEndpoints(anchor, templateMethod, nestedValues,
                             dependencies, new LinkedHashSet<>(visited), parsedWrappers));
@@ -531,13 +544,16 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             List<MqValueResolver.ResolvedValue> routingKeys;
             if (leadingStrings >= 2 && arguments.length > 1) {
                 exchanges = resolveWrapperExpressionAlternatives(
-                        arguments[0], parameterValues, dependencies, new LinkedHashSet<>());
+                        arguments[0], parameterValues, dependencies,
+                        new LinkedHashSet<>(), new LinkedHashMap<>());
                 routingKeys = resolveWrapperExpressionAlternatives(
-                        arguments[1], parameterValues, dependencies, new LinkedHashSet<>());
+                        arguments[1], parameterValues, dependencies,
+                        new LinkedHashSet<>(), new LinkedHashMap<>());
             } else {
                 exchanges = List.of(MqValueResolver.ResolvedValue.staticValue(""));
                 routingKeys = resolveWrapperExpressionAlternatives(
-                        arguments[0], parameterValues, dependencies, new LinkedHashSet<>());
+                        arguments[0], parameterValues, dependencies,
+                        new LinkedHashSet<>(), new LinkedHashMap<>());
             }
             endpoints.addAll(producerEndpoints(anchor, exchanges, routingKeys));
         }
@@ -668,14 +684,20 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             PsiExpression expression,
             Map<PsiParameter, List<MqValueResolver.ResolvedValue>> parameterValues,
             Set<Object> dependencies,
-            Set<PsiElement> visited) {
+            Set<PsiElement> visited,
+            Map<PsiParameter, List<MqValueResolver.ResolvedValue>> callerValuesCache) {
         if (!visited.add(expression)) {
             return List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper expression is recursive"));
         }
         if (expression instanceof PsiReferenceExpression reference
                 && reference.resolve() instanceof PsiParameter parameter) {
-            return parameterValues.getOrDefault(parameter,
-                    List.of(MqValueResolver.ResolvedValue.dynamic("RabbitMQ wrapper argument is missing")));
+            // 已绑定的封装实参直接使用，未绑定的业务参数再反查调用点
+            List<MqValueResolver.ResolvedValue> values = parameterValues.get(parameter);
+            if (values != null) {
+                return values;
+            }
+            return resolveCallerParameterValues(
+                    parameter, expression, parameterValues, dependencies, visited, callerValuesCache);
         }
         if (expression instanceof PsiConditionalExpression conditional
                 && conditional.getThenExpression() != null
@@ -684,7 +706,7 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             for (PsiExpression branch : List.of(
                     conditional.getThenExpression(), conditional.getElseExpression())) {
                 List<MqValueResolver.ResolvedValue> branchValues = resolveWrapperExpressionAlternatives(
-                        branch, parameterValues, dependencies, new LinkedHashSet<>(visited));
+                        branch, parameterValues, dependencies, new LinkedHashSet<>(visited), callerValuesCache);
                 if (branchValues.stream().anyMatch(value -> !value.resolved())) {
                     return branchValues;
                 }
@@ -692,13 +714,116 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
             }
             return result.stream().distinct().toList();
         }
-        if (expression instanceof PsiReferenceExpression reference
-                && reference.resolve() instanceof PsiVariable variable
-                && variable.getInitializer() != null) {
-            return resolveWrapperExpressionAlternatives(
-                    variable.getInitializer(), parameterValues, dependencies, visited);
+        // 已有静态表达式和分支赋值优先沿用共享解析结果
+        List<MqValueResolver.ResolvedValue> resolved = valueResolver.resolveExpressionAlternatives(
+                expression, dependencies);
+        if (resolved.stream().allMatch(MqValueResolver.ResolvedValue::resolved)) {
+            return resolved;
         }
-        return List.of(valueResolver.resolveExpression(expression, dependencies));
+        if (expression instanceof PsiReferenceExpression reference
+                && reference.resolve() instanceof PsiLocalVariable variable
+                && variable.getInitializer() != null) {
+            PsiCodeBlock scope = PsiTreeUtil.getParentOfType(variable, PsiCodeBlock.class);
+            if (scope == null || hasAssignmentBeforeUse(variable, expression, scope)) {
+                return resolved;
+            }
+            return resolveWrapperExpressionAlternatives(
+                    variable.getInitializer(), parameterValues, dependencies, visited, callerValuesCache);
+        }
+        if (expression instanceof PsiMethodCallExpression getterCall) {
+            // 枚举查找按真实业务实参选择路由字段
+            return valueResolver.resolveEnumGetterAlternatives(getterCall, dependencies,
+                    argument -> resolveWrapperExpressionAlternatives(argument, parameterValues,
+                            dependencies, new LinkedHashSet<>(visited), callerValuesCache));
+        }
+        return resolved;
+    }
+
+    // 业务目的地参数从明确的项目调用点收集实参
+    private List<MqValueResolver.ResolvedValue> resolveCallerParameterValues(
+            PsiParameter parameter,
+            PsiExpression use,
+            Map<PsiParameter, List<MqValueResolver.ResolvedValue>> parameterValues,
+            Set<Object> dependencies,
+            Set<PsiElement> visited,
+            Map<PsiParameter, List<MqValueResolver.ResolvedValue>> callerValuesCache) {
+        List<MqValueResolver.ResolvedValue> unresolved = List.of(MqValueResolver.ResolvedValue.dynamic(
+                "RabbitMQ destination parameter has no unambiguous static project callers"));
+        if (!MqEndpointParser.isStringType(parameter.getType())
+                || !(parameter.getDeclarationScope() instanceof PsiMethod owner)
+                || owner.getBody() == null) {
+            return unresolved;
+        }
+        // 每个调用位置先检查参数改写，再复用同一上下文的静态结果
+        if (hasAssignmentBeforeUse(parameter, use, owner.getBody())) {
+            return unresolved;
+        }
+        List<MqValueResolver.ResolvedValue> cached = callerValuesCache.get(parameter);
+        if (cached != null) {
+            return cached;
+        }
+        // 通用发送封装保留业务调用端锚点，不合并其内部未绑定参数
+        if (!visited.add(parameter) || isProducerWrapper(owner)) {
+            return unresolved;
+        }
+        GlobalSearchScope scope = GlobalSearchScope.projectScope(owner.getProject());
+        VirtualFile sourceFile = owner.getContainingFile().getVirtualFile();
+        if (sourceFile == null || !scope.contains(sourceFile)) {
+            return unresolved;
+        }
+
+        Set<PsiMethod> methods = new LinkedHashSet<>(List.of(owner));
+        for (PsiMethod superMethod : owner.findSuperMethods()) {
+            // 接口调用仅在项目中存在唯一具体实现时带入上下文
+            List<PsiMethod> implementations = OverridingMethodsSearch.search(superMethod, scope, true)
+                    .findAll().stream().filter(method -> method.getBody() != null).toList();
+            if (superMethod.getBody() != null || implementations.size() != 1
+                    || !implementations.get(0).isEquivalentTo(owner)) {
+                return unresolved;
+            }
+            methods.add(superMethod);
+        }
+        Set<PsiMethodCallExpression> callers = new LinkedHashSet<>();
+        for (PsiMethod method : methods) {
+            for (var reference : MethodReferencesSearch.search(method, scope, true).findAll()) {
+                if (reference.getElement() instanceof PsiMethodReferenceExpression) {
+                    return unresolved;
+                }
+                if (reference.getElement() instanceof PsiReferenceExpression expression
+                        && expression.getParent() instanceof PsiMethodCallExpression call) {
+                    callers.add(call);
+                }
+            }
+        }
+        if (callers.isEmpty()) {
+            return unresolved;
+        }
+        int index = owner.getParameterList().getParameterIndex(parameter);
+        List<MqValueResolver.ResolvedValue> values = new ArrayList<>();
+        for (PsiMethodCallExpression caller : callers) {
+            PsiExpression[] arguments = caller.getArgumentList().getExpressions();
+            if (index < 0 || index >= arguments.length) {
+                return unresolved;
+            }
+            List<MqValueResolver.ResolvedValue> callerValues = resolveWrapperExpressionAlternatives(
+                    arguments[index], parameterValues, dependencies,
+                    new LinkedHashSet<>(visited), callerValuesCache);
+            if (callerValues.stream().anyMatch(value -> !value.resolved())) {
+                return callerValues;
+            }
+            values.addAll(callerValues);
+        }
+        List<MqValueResolver.ResolvedValue> resolved = values.stream().distinct().toList();
+        callerValuesCache.put(parameter, resolved);
+        return resolved;
+    }
+
+    // 目的地变量在使用前被重新赋值时停止沿用初始化值
+    private boolean hasAssignmentBeforeUse(PsiVariable variable, PsiElement use, PsiElement scope) {
+        return PsiTreeUtil.findChildrenOfType(scope, PsiAssignmentExpression.class).stream()
+                .anyMatch(assignment -> assignment.getTextOffset() < use.getTextOffset()
+                        && assignment.getLExpression() instanceof PsiReferenceExpression reference
+                        && reference.resolve() == variable);
     }
 
     private List<BindingRelation> collectBindings(

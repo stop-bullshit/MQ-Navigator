@@ -48,7 +48,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class MqNavigationCacheTest extends BasePlatformTestCase {
 
-    private static final int CACHE_VERSION = 3;
+    // 端点缓存跟随枚举路由解析版本升级
+    private static final int CACHE_VERSION = 4;
     private static final int PERFORMANCE_ENDPOINT_COUNT = 2_000;
     private static final int PERFORMANCE_WARMUPS = 5;
     private static final int PERFORMANCE_SAMPLES = 20;
@@ -80,7 +81,8 @@ public class MqNavigationCacheTest extends BasePlatformTestCase {
     public void testPreviousParserCacheIsRebuiltAfterUpgrade() throws Exception {
         configureSource("source-topic");
         MqNavigationService.CacheState oldState = cacheState(List.of());
-        oldState.version = 2;
+        // 上一版本快照升级后重新扫描当前源码
+        oldState.version = CACHE_VERSION - 1;
 
         assertFallsBackToSource(oldState, "source-topic");
     }

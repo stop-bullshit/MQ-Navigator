@@ -40,6 +40,8 @@ Recognition uses the public framework types and source-level parameter flow, not
 - Listener placeholders and direct `@Value` instance fields support a single `${key}` or `${key:default}` expression. Values are read from the owning module's `application*` / `bootstrap*` properties or YAML files.
 - Different values for the same key are reported as ambiguous. The plugin does not select an active Spring profile or reproduce Spring's configuration-precedence rules.
 - RabbitMQ programmatic bindings supply the exchange and routing keys for queue-based listeners. Multiple bindings for one queue remain separate candidates.
+- Enum lookup getters can resolve a code to its route when the source proves a simple `values()` loop, an equality comparison, and a return of the matching constant. Computed getters, transformed constructor values, and additional lookup conditions remain unresolved.
+- RabbitMQ sends inside business methods can trace destination inputs to static project call sites, including callers through an interface with one concrete source implementation. Unknown inputs or ambiguous implementations remain dynamic; the plugin does not substitute every enum route.
 
 ## Limitations and known issues
 
