@@ -10,19 +10,25 @@ import com.intellij.psi.PsiCodeBlock;
 import com.intellij.psi.PsiConditionalExpression;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiExpression;
+import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiIdentifier;
 import com.intellij.psi.PsiIfStatement;
 import com.intellij.psi.PsiLoopStatement;
+import com.intellij.psi.PsiLambdaExpression;
 import com.intellij.psi.PsiLocalVariable;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiMethodCallExpression;
 import com.intellij.psi.PsiMethodReferenceExpression;
 import com.intellij.psi.PsiModifierListOwner;
+import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiNewExpression;
 import com.intellij.psi.PsiParameter;
+import com.intellij.psi.PsiParenthesizedExpression;
 import com.intellij.psi.PsiReferenceExpression;
 import com.intellij.psi.PsiReturnStatement;
 import com.intellij.psi.PsiSwitchBlock;
+import com.intellij.psi.PsiType;
+import com.intellij.psi.PsiTypeCastExpression;
 import com.intellij.psi.PsiVariable;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AnnotatedElementsSearch;
@@ -31,8 +37,10 @@ import com.intellij.psi.search.searches.OverridingMethodsSearch;
 import com.intellij.psi.util.InheritanceUtil;
 import com.intellij.psi.util.PsiUtil;
 import com.intellij.psi.util.PsiTreeUtil;
+import com.intellij.psi.util.TypeConversionUtil;
 import cn.luckyh.mqx.model.MqDestination;
 import cn.luckyh.mqx.model.MqEndpoint;
+import cn.luckyh.mqx.spring.SpringBeanSource;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -52,6 +60,17 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
     private static final String QUEUE_BUILDER = "org.springframework.amqp.core.QueueBuilder";
     private static final String EXCHANGE_BUILDER = "org.springframework.amqp.core.ExchangeBuilder";
     private static final String BINDING_BUILDER = "org.springframework.amqp.core.BindingBuilder";
+    private static final String QUEUE = "org.springframework.amqp.core.Queue";
+    private static final String EXCHANGE = "org.springframework.amqp.core.Exchange";
+    private static final String BEAN = "org.springframework.context.annotation.Bean";
+    private static final String AUTOWIRED = "org.springframework.beans.factory.annotation.Autowired";
+    private static final String QUALIFIER = "org.springframework.beans.factory.annotation.Qualifier";
+    private static final List<String> RESOURCE_ANNOTATIONS = List.of(
+            "javax.annotation.Resource", "jakarta.annotation.Resource");
+    private static final List<String> STANDARD_EXCHANGES = List.of(
+            "org.springframework.amqp.core.DirectExchange", "org.springframework.amqp.core.TopicExchange",
+            "org.springframework.amqp.core.FanoutExchange", "org.springframework.amqp.core.HeadersExchange",
+            "org.springframework.amqp.core.CustomExchange");
     private static final String LISTENER = "org.springframework.amqp.rabbit.annotation.RabbitListener";
     private static final String DEAD_LETTER_EXCHANGE = "x-dead-letter-exchange";
     private static final String DEAD_LETTER_ROUTING_KEY = "x-dead-letter-routing-key";
@@ -847,12 +866,15 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
                 if (toCall == null || toCall.getArgumentList().getExpressionCount() == 0) {
                     return true;
                 }
-                MqValueResolver.ResolvedValue queue = resolveBeanValue(
-                        bindCall.getArgumentList().getExpressions()[0], false, dependencies);
-                MqValueResolver.ResolvedValue exchange = resolveBeanValue(
-                        toCall.getArgumentList().getExpressions()[0], true, dependencies);
+                // Bean名称和交换机类型从同一个真实返回对象解析
+                PsiExpression queueCreation = resolveBeanCreation(
+                        bindCall.getArgumentList().getExpressions()[0], false, dependencies, new LinkedHashSet<>());
+                PsiExpression exchangeCreation = resolveBeanCreation(
+                        toCall.getArgumentList().getExpressions()[0], true, dependencies, new LinkedHashSet<>());
+                MqValueResolver.ResolvedValue queue = resolveBeanValue(queueCreation, dependencies);
+                MqValueResolver.ResolvedValue exchange = resolveBeanValue(exchangeCreation, dependencies);
                 MqValueResolver.ResolvedValue routingKey = resolveBindingKey(toCall, dependencies);
-                String exchangeType = resolveExchangeType(toCall.getArgumentList().getExpressions()[0]);
+                String exchangeType = resolveExchangeType(exchangeCreation);
                 PsiElement anchor = bindCall.getMethodExpression().getReferenceNameElement();
                 if (anchor == null) {
                     return true;
@@ -932,60 +954,269 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
                 endpoint.className(), endpoint.memberName());
     }
 
-    private MqValueResolver.ResolvedValue resolveBeanValue(
-            PsiExpression expression, boolean exchange, Set<Object> dependencies) {
-        if (!(expression instanceof PsiMethodCallExpression call)) {
-            return valueResolver.resolveExpression(expression, dependencies);
+    // MQ名称只读取已确定返回对象的构造或Builder实参
+    private MqValueResolver.ResolvedValue resolveBeanValue(PsiExpression creation, Set<Object> dependencies) {
+        if (creation == null) {
+            return MqValueResolver.ResolvedValue.dynamic(
+                    "RabbitMQ bean factory is missing, ambiguous, or not statically resolved");
         }
-        PsiMethod method = call.resolveMethod();
-        if (method == null) {
-            return MqValueResolver.ResolvedValue.dynamic("RabbitMQ bean method cannot be resolved");
-        }
-        for (PsiMethodCallExpression nested : PsiTreeUtil.findChildrenOfType(method, PsiMethodCallExpression.class)) {
-            String name = nested.getMethodExpression().getReferenceName();
-            if ((!exchange && "durable".equals(name)) || (exchange && isExchangeBuilderMethod(name))) {
-                if (nested.getArgumentList().getExpressionCount() == 0) {
-                    continue;
-                }
-                return valueResolver.resolveExpression(nested.getArgumentList().getExpressions()[0], dependencies);
-            }
-        }
-        for (PsiNewExpression creation : PsiTreeUtil.findChildrenOfType(method, PsiNewExpression.class)) {
-            if (creation.getArgumentList() == null || creation.getArgumentList().getExpressionCount() == 0) {
-                continue;
-            }
-            String type = creation.getClassReference() == null
-                    ? "" : creation.getClassReference().getReferenceName();
-            type = type == null ? "" : type;
-            if ((!exchange && "Queue".equals(type)) || (exchange && type.endsWith("Exchange"))) {
-                return valueResolver.resolveExpression(creation.getArgumentList().getExpressions()[0], dependencies);
-            }
-        }
-        for (PsiReturnStatement statement : PsiTreeUtil.findChildrenOfType(method, PsiReturnStatement.class)) {
-            PsiExpression returnExpression = statement.getReturnValue();
-            if (returnExpression instanceof PsiReferenceExpression reference
-                    && reference.resolve() instanceof PsiVariable variable
-                    && variable.getInitializer() != null) {
-                PsiExpression initializer = variable.getInitializer();
-                MqValueResolver.ResolvedValue value = resolveBeanExpression(initializer, exchange, dependencies);
-                if (value != null) {
-                    return value;
-                }
-            }
-        }
-        return MqValueResolver.ResolvedValue.dynamic("RabbitMQ bean name is not statically resolved");
+        PsiExpression[] arguments = creation instanceof PsiMethodCallExpression call
+                ? call.getArgumentList().getExpressions()
+                : ((PsiNewExpression) creation).getArgumentList().getExpressions();
+        return valueResolver.resolveExpression(arguments[0], dependencies);
     }
 
-    private MqValueResolver.ResolvedValue resolveBeanExpression(
-            PsiExpression expression, boolean exchange, Set<Object> dependencies) {
-        if (expression instanceof PsiMethodCallExpression call && call.resolveMethod() != null) {
-            return resolveBeanValue(call, exchange, dependencies);
+    // Bean来源沿实际返回对象追踪，避免读取方法体内无关构造
+    private PsiExpression resolveBeanCreation(
+            PsiExpression expression, boolean exchange, Set<Object> dependencies, Set<PsiElement> visited) {
+        if (expression == null || !visited.add(expression)) {
+            return null;
         }
-        if (expression instanceof PsiNewExpression creation && creation.getArgumentList() != null
-                && creation.getArgumentList().getExpressionCount() > 0) {
-            return valueResolver.resolveExpression(creation.getArgumentList().getExpressions()[0], dependencies);
+        if (expression instanceof PsiParenthesizedExpression parenthesized) {
+            return resolveBeanCreation(parenthesized.getExpression(), exchange, dependencies, visited);
         }
-        return valueResolver.resolveExpression(expression, dependencies);
+        if (expression instanceof PsiTypeCastExpression cast) {
+            return resolveBeanCreation(cast.getOperand(), exchange, dependencies, visited);
+        }
+        if (expression instanceof PsiReferenceExpression reference
+                && reference.resolve() instanceof PsiVariable variable) {
+            // 直接调用传入的参数不按容器注入参数替换
+            if (variable instanceof PsiParameter && visited.contains(variable)) {
+                return null;
+            }
+            if (variable instanceof PsiLocalVariable local && local.getInitializer() != null) {
+                PsiCodeBlock scope = PsiTreeUtil.getParentOfType(local, PsiCodeBlock.class);
+                if (scope == null || hasAssignmentBeforeUse(local, expression, scope)) {
+                    return null;
+                }
+                return resolveBeanCreation(local.getInitializer(), exchange, dependencies, visited);
+            }
+            if (variable instanceof PsiField field && field.hasModifierProperty(PsiModifier.FINAL)
+                    && field.getInitializer() != null && field.getAnnotation(AUTOWIRED) == null
+                    && RESOURCE_ANNOTATIONS.stream().noneMatch(name -> field.getAnnotation(name) != null)
+                    && field.getAnnotation("org.springframework.beans.factory.annotation.Value") == null
+                    && field.getAnnotation("javax.inject.Inject") == null
+                    && field.getAnnotation("jakarta.inject.Inject") == null) {
+                return resolveBeanCreation(field.getInitializer(), exchange, dependencies, visited);
+            }
+            PsiMethod factory = injectedBeanFactory(reference, variable, exchange, dependencies);
+            return factory == null ? null : resolveFactoryCreation(factory, exchange, dependencies, visited);
+        }
+        if (expression instanceof PsiNewExpression creation) {
+            if (creation.getAnonymousClass() != null || creation.getClassReference() == null
+                    || creation.getArgumentList() == null || creation.getArgumentList().getExpressionCount() == 0
+                    || !(creation.getClassReference().resolve() instanceof PsiClass type)) {
+                return null;
+            }
+            String className = type.getQualifiedName();
+            boolean knownType = exchange ? className != null && STANDARD_EXCHANGES.contains(className)
+                    : QUEUE.equals(className);
+            return knownType ? creation : null;
+        }
+        if (!(expression instanceof PsiMethodCallExpression call)) {
+            return null;
+        }
+        PsiMethodCallExpression builder = beanBuilderRoot(call, exchange);
+        if (builder != null) {
+            return builder;
+        }
+        PsiMethod factory = call.resolveMethod();
+        if (factory == null) {
+            return null;
+        }
+        // 工厂参数只标记调用上下文，未使用参数不影响固定返回对象
+        visited.addAll(List.of(factory.getParameterList().getParameters()));
+        return resolveFactoryCreation(factory, exchange, dependencies, visited);
+    }
+
+    // 工厂方法仅接受唯一方法级返回，循环与分支保持动态
+    private PsiExpression resolveFactoryCreation(
+            PsiMethod factory, boolean exchange, Set<Object> dependencies, Set<PsiElement> visited) {
+        if (factory.getBody() == null || !visited.add(factory)) {
+            return null;
+        }
+        PsiReturnStatement returned = null;
+        for (PsiReturnStatement statement : PsiTreeUtil.findChildrenOfType(factory.getBody(), PsiReturnStatement.class)) {
+            if (PsiTreeUtil.getParentOfType(statement, PsiMethod.class) != factory) {
+                continue;
+            }
+            PsiLambdaExpression lambda = PsiTreeUtil.getParentOfType(statement, PsiLambdaExpression.class);
+            if (lambda != null && PsiTreeUtil.isAncestor(factory, lambda, false)) {
+                continue;
+            }
+            if (returned != null) {
+                return null;
+            }
+            returned = statement;
+        }
+        return returned == null ? null
+                : resolveBeanCreation(returned.getReturnValue(), exchange, dependencies, visited);
+    }
+
+    // 标准Builder的名称与交换机类型由创建入口确定
+    private PsiMethodCallExpression beanBuilderRoot(PsiMethodCallExpression expression, boolean exchange) {
+        PsiMethodCallExpression current = expression;
+        while (current != null) {
+            PsiMethod method = current.resolveMethod();
+            if (method != null && method.getContainingClass() != null
+                    && current.getArgumentList().getExpressionCount() > 0) {
+                String owner = method.getContainingClass().getQualifiedName();
+                if ((!exchange && QUEUE_BUILDER.equals(owner) && "durable".equals(method.getName()))
+                        || (exchange && EXCHANGE_BUILDER.equals(owner) && isExchangeBuilderMethod(method.getName()))) {
+                    return current;
+                }
+            }
+            PsiExpression qualifier = current.getMethodExpression().getQualifierExpression();
+            current = qualifier instanceof PsiMethodCallExpression call ? call : null;
+        }
+        return null;
+    }
+
+    // 注入位置按明确名称或唯一类型定位Java Bean工厂
+    private PsiMethod injectedBeanFactory(
+            PsiReferenceExpression use, PsiVariable variable, boolean exchange, Set<Object> dependencies) {
+        PsiClass type = PsiUtil.resolveClassInClassTypeOnly(variable.getType());
+        if (type == null || !isType(type, exchange ? EXCHANGE : QUEUE)) {
+            return null;
+        }
+        PsiAnnotation resource = null;
+        if (variable instanceof PsiField field) {
+            for (String resourceName : RESOURCE_ANNOTATIONS) {
+                if (field.getAnnotation(resourceName) != null) {
+                    resource = field.getAnnotation(resourceName);
+                    break;
+                }
+            }
+            if (resource == null && field.getAnnotation(AUTOWIRED) == null) {
+                return null;
+            }
+        } else if (!(variable instanceof PsiParameter parameter)
+                || !(parameter.getDeclarationScope() instanceof PsiMethod method)
+                || method.getAnnotation(BEAN) == null) {
+            return null;
+        }
+        if (hasCustomQualifier(variable)) {
+            return null;
+        }
+
+        PsiAnnotation qualifier = variable.getAnnotation(QUALIFIER);
+        List<PsiElement> definitions;
+        if (resource != null) {
+            if (qualifier != null || resource.findDeclaredAttributeValue("type") != null) {
+                return null;
+            }
+            for (String attribute : List.of("lookup", "mappedName")) {
+                String externalName = annotationString(resource, attribute);
+                if (externalName == null || !externalName.isEmpty()) {
+                    return null;
+                }
+            }
+            String name = annotationString(resource, "name");
+            if (name == null) {
+                return null;
+            }
+            boolean defaultName = name.isEmpty();
+            definitions = findBeanDefinitions(use, variable.getType(),
+                    defaultName ? variable.getName() : name, false, dependencies);
+            if (definitions.isEmpty() && defaultName) {
+                definitions = findBeanDefinitions(use, variable.getType(), null, true, dependencies);
+            }
+        } else if (qualifier != null) {
+            String name = annotationString(qualifier, "value");
+            if (name == null || name.isEmpty()) {
+                return null;
+            }
+            definitions = findBeanDefinitions(use, variable.getType(), name, true, dependencies);
+        } else {
+            definitions = findBeanDefinitions(use, variable.getType(), null, true, dependencies);
+        }
+        if (definitions.size() != 1 || !(definitions.get(0) instanceof PsiMethod factory)
+                || factory.getAnnotation(BEAN) == null || factory.getReturnType() == null
+                || !TypeConversionUtil.isAssignable(variable.getType(), factory.getReturnType())) {
+            return null;
+        }
+        return factory;
+    }
+
+    // 模型候选保留未知来源和歧义，类型注入遵循显式候选限制
+    private List<PsiElement> findBeanDefinitions(
+            PsiElement context, PsiType type, String name, boolean autowire, Set<Object> dependencies) {
+        // Bean定义可用性变化后重新扫描未解析的注入位置
+        dependencies.add(SpringBeanSource.MODEL_USAGE);
+        List<SpringBeanSource> providers = SpringBeanSource.EP_NAME.getExtensionList();
+        if (providers.isEmpty()) {
+            return List.of();
+        }
+        Set<PsiElement> definitions = new LinkedHashSet<>();
+        for (SpringBeanSource provider : providers) {
+            for (PsiElement definition : provider.findBeans(context, type, name, dependencies)) {
+                if (!autowire || !(definition instanceof PsiMethod factory)) {
+                    definitions.add(definition);
+                    continue;
+                }
+                PsiAnnotation bean = factory.getAnnotation(BEAN);
+                PsiAnnotationMemberValue value = bean == null ? null : bean.findAttributeValue("autowireCandidate");
+                Object candidate = value == null ? null : JavaPsiFacade.getInstance(context.getProject())
+                        .getConstantEvaluationHelper().computeConstantExpression(value);
+                if (Boolean.FALSE.equals(candidate)) {
+                    continue;
+                }
+                if (candidate == null && bean != null && bean.findDeclaredAttributeValue("autowireCandidate") != null) {
+                    definitions.add(null);
+                    continue;
+                }
+                if (name != null && (hasCustomQualifier(factory)
+                        || factory.getAnnotation(QUALIFIER) != null
+                        && !name.equals(annotationString(factory.getAnnotation(QUALIFIER), "value")))) {
+                    definitions.add(null);
+                    continue;
+                }
+                definitions.add(definition);
+            }
+        }
+        return new ArrayList<>(definitions);
+    }
+
+    // 明确Bean名称仅接受注解中的编译期字符串
+    private String annotationString(PsiAnnotation annotation, String attribute) {
+        PsiAnnotationMemberValue value = annotation.findAttributeValue(attribute);
+        if (value == null) {
+            return "";
+        }
+        Object constant = JavaPsiFacade.getInstance(annotation.getProject())
+                .getConstantEvaluationHelper().computeConstantExpression(value);
+        return constant instanceof String string ? string : null;
+    }
+
+    // 自定义限定条件保留未确定状态，不忽略后选择其它Bean
+    private boolean hasCustomQualifier(PsiModifierListOwner owner) {
+        for (PsiAnnotation annotation : owner.getAnnotations()) {
+            if (QUALIFIER.equals(annotation.getQualifiedName())) {
+                continue;
+            }
+            PsiClass type = annotation.resolveAnnotationType();
+            if (type != null && isQualifierAnnotation(type, new LinkedHashSet<>())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 自定义限定注解不可降级为无名称的类型查询
+    private boolean isQualifierAnnotation(PsiClass annotationType, Set<PsiClass> visited) {
+        if (QUALIFIER.equals(annotationType.getQualifiedName())) {
+            return true;
+        }
+        if (!visited.add(annotationType)) {
+            return false;
+        }
+        for (PsiAnnotation annotation : annotationType.getAnnotations()) {
+            PsiClass parent = annotation.resolveAnnotationType();
+            if (parent != null && isQualifierAnnotation(parent, visited)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private MqValueResolver.ResolvedValue resolveBindingKey(
@@ -997,27 +1228,21 @@ public final class RabbitMqEndpointParser implements MqEndpointParser {
         return valueResolver.resolveExpression(withCall.getArgumentList().getExpressions()[0], dependencies);
     }
 
-    private String resolveExchangeType(PsiExpression expression) {
-        if (!(expression instanceof PsiMethodCallExpression call) || call.resolveMethod() == null) {
-            return "direct";
-        }
-        for (PsiMethodCallExpression nested : PsiTreeUtil.findChildrenOfType(
-                call.resolveMethod(), PsiMethodCallExpression.class)) {
-            String name = nested.getMethodExpression().getReferenceName();
-            if (isExchangeBuilderMethod(name)) {
+    // 交换机类型与名称共用已确定的创建对象
+    private String resolveExchangeType(PsiExpression creation) {
+        if (creation instanceof PsiMethodCallExpression call) {
+            String name = call.getMethodExpression().getReferenceName();
+            if (name != null && isExchangeBuilderMethod(name)) {
                 return name.substring(0, name.length() - "Exchange".length());
             }
         }
-        for (PsiNewExpression creation : PsiTreeUtil.findChildrenOfType(
-                call.resolveMethod(), PsiNewExpression.class)) {
-            if (creation.getClassReference() != null) {
-                String type = creation.getClassReference().getReferenceName();
-                if (type != null && type.endsWith("Exchange")) {
-                    return type.substring(0, type.length() - "Exchange".length()).toLowerCase();
-                }
+        if (creation instanceof PsiNewExpression expression && expression.getClassReference() != null) {
+            String name = expression.getClassReference().getReferenceName();
+            if (name != null && name.endsWith("Exchange")) {
+                return name.substring(0, name.length() - "Exchange".length()).toLowerCase();
             }
         }
-        return "direct";
+        return "";
     }
 
     private boolean isExchangeBuilderMethod(String name) {

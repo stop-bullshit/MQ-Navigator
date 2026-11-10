@@ -1,0 +1,6 @@
+<idea-plugin>
+    <!-- Spring支持可用时注册公开模型适配 -->
+    <extensions defaultExtensionNs="cn.luckyh.mqx">
+        <springBeanSource implementation="cn.luckyh.mqx.spring.IdeaSpringBeanSource"/>
+    </extensions>
+</idea-plugin>

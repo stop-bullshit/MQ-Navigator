@@ -11,7 +11,7 @@ MQ Navigator is an IntelliJ IDEA plugin for navigating between Java message prod
 3. Select the ZIP and restart the IDE if prompted.
 4. Open a Java project, import its Maven or Gradle dependencies, and wait for indexing to finish.
 
-The declared IDE range is **IntelliJ IDEA 2023.3 through 2026.3** (builds `233` through `263.*`), with Java support enabled. Automated compatibility checks target IDEA 2023.3, 2026.2.1, and 2026.3; see each release's notes for its verification results. Other IDE products and framework versions are not automatically covered by those checks.
+The declared IDE range is **IntelliJ IDEA 2023.3 through 2026.3** (builds `233` through `263.*`), with Java support enabled. Automated compatibility checks target IDEA Community 2023.3, IDEA Ultimate 2023.3, and IDEA 2026.2.1/2026.3; see each release's notes for its verification results. Other IDE products and framework versions are not automatically covered by those checks.
 
 GitHub Releases provide installable packages. Availability on JetBrains Marketplace is not implied.
 
@@ -43,6 +43,14 @@ Recognition uses the public framework types and source-level parameter flow, not
 - Enum lookup getters can resolve a code to its route when the source proves a simple `values()` loop, an equality comparison, and a return of the matching constant. Computed getters, transformed constructor values, and additional lookup conditions remain unresolved.
 - RabbitMQ sends inside business methods can trace destination inputs to static project call sites, including callers through an interface with one concrete source implementation. Unknown inputs or ambiguous implementations remain dynamic; the plugin does not substitute every enum route.
 
+## Optional Spring Bean lookup
+
+With IDEA Spring Support enabled and a single Spring context available for the current file, unresolved Queue/Exchange injection references can use the Spring model to locate Java `@Bean` factories. Named qualifiers, aliases, `@Resource` names, and unique type candidates are supported. The actual RabbitMQ name and exchange type come from the returned builder or constructor, rather than the Bean's registration name.
+
+Multiple candidates, custom qualifiers, opaque definitions, XML/compiled factories without Java source, and runtime calculations remain unresolved. The plugin does not start an application context or create Bean instances. Manually declaring a RabbitMQ object through `RabbitAdmin` does not by itself register a Spring Bean; those declarations continue to use source parsing.
+
+Model dependencies invalidate live topology snapshots. Bean-dependent snapshots are scanned again after reopening the IDE so an old context or profile selection is not restored as a current binding. Without Spring Support, direct Java source parsing remains available.
+
 ## Limitations and known issues
 
 This is static navigation, not proof that a message is delivered at runtime. The plugin does not connect to RabbitMQ, Kafka, or RocketMQ and does not modify application source or configuration files.
@@ -61,6 +69,8 @@ The tests include synthetic framework stubs and a small [manual sample project](
 ## Build and verify
 
 Use **JDK 17** and the checked-in Gradle Wrapper. The first build downloads Gradle, IDEA test platforms, and Maven dependencies. A local broker is not needed.
+
+Compilation uses the IDEA Ultimate 2023.3 SDK for the public Spring API. Spring is an optional runtime dependency; core parser tests use Java-only fixtures and controlled Bean definitions, while IDE compatibility checks cover both Community and Ultimate distributions.
 
 Windows PowerShell:
 

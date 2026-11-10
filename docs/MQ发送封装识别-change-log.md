@@ -1,5 +1,26 @@
 # MQ 发送封装识别变更日志
 
+## [CHANGE-更新: Spring Bean补充拓扑定位-20261110-1520-01]
+
+| 字段 | 内容 |
+| --- | --- |
+| 日期 | 2026-11-10 |
+| 版本 | 0.4.0 |
+| 触发需求 | 根据IDEA已识别的Spring Bean定义补充Queue、Exchange注入引用的拓扑解析 |
+
+**修改范围：**
+
+- `SpringBeanSource`和`IdeaSpringBeanSource`：通过可选扩展点隔离Spring类加载，使用公开模型按明确名称/别名或类型查询定义；保留库候选、未知来源和歧义。
+- `plugin.xml`及独立Spring描述文件：Spring支持启用时注册适配，未启用时保留普通Java解析。
+- `RabbitMqEndpointParser`：解析字段和Bean参数注入，按实际返回对象求MQ名及交换机类型；Bean注册名不替代MQ名，不将直接Java工厂参数误当容器注入。
+- `MqNavigationService`和缓存回归：缓存版本4升级为5，Bean依赖结果跟踪模型变化且不跨会话直接恢复旧Profile结果。
+- `build.gradle.kts`：以IU2023.3公开Spring API编译，保留Java17；核心单测使用Java-only插件集和受控Bean来源，兼容性目标同时包含CE和Ultimate。
+- 新增Bean/注入注解类型桩及Bean定位回归，不创建真实SpringContext或broker连接。
+
+**保护边界：** 首批覆盖Java@Bean工厂和标量Queue/Exchange注入；多上下文、多候选、自定义限定符、XML/不可定位源码及运行时计算保持动态。未增加new Binding构造式收集或完整Spring依赖注入求值。
+
+**验证：** 初次基线受SDK未分发的Spring Boot测试专用服务和测试应用未注册自定义EP阻断；核心单测限定Java插件并注册受控SPI后，全量132项测试通过，失败、错误、跳过均为0，其中新增Bean定位用例14项。项目配置、插件结构检查和0.4.0构建通过。Plugin Verifier 1.411分别使用各IDE自带运行时检查IC-233.11799.241、IU-233.11799.241和IU-263.7307.200，均为Compatible；263版本保留两条既有弃用API提示。安装包ID、233至263.*兼容范围、可选描述文件及Spring适配类已核对，未混入Spring或IDE SDK。Bean行为回归使用受控模型来源，真实Spring适配已编译及二进制检查，未在业务IDE现场验证Spring上下文和跳转，未启动应用或连接broker。
+
 ## [CHANGE-更新: 内部发送位置解析枚举路由-20261110-1349-01]
 
 | 字段 | 内容 |

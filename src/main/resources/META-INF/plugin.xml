@@ -11,6 +11,13 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.java</depends>
+    <!-- Spring启用后提供可选Bean定义来源 -->
+    <depends optional="true" config-file="cn.luckyh.mqx-withSpring.xml">com.intellij.spring</depends>
+
+    <extensionPoints>
+        <!-- Bean定义查询隔离Spring可选类加载 -->
+        <extensionPoint name="springBeanSource" interface="cn.luckyh.mqx.spring.SpringBeanSource" dynamic="true"/>
+    </extensionPoints>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- 逻辑变动: 注册三类消息端点的双向导航入口-20260817-1826-01 -->

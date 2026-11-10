@@ -30,6 +30,7 @@ import cn.luckyh.mqx.parser.MqEndpointParser;
 import cn.luckyh.mqx.parser.MqValueResolver;
 import cn.luckyh.mqx.parser.RabbitMqEndpointParser;
 import cn.luckyh.mqx.parser.RocketMqEndpointParser;
+import cn.luckyh.mqx.spring.SpringBeanSource;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -45,8 +46,8 @@ import java.util.Set;
 @State(name = "MqNavigationEndpointCache", storages = @Storage(StoragePathMacros.CACHE_FILE))
 public final class MqNavigationService implements PersistentStateComponent<MqNavigationService.CacheState> {
 
-    // 枚举路由解析升级后重建旧端点缓存
-    private static final int CACHE_VERSION = 4;
+    // Bean定义解析升级后重建旧端点缓存
+    private static final int CACHE_VERSION = 5;
     private static final Logger LOG = Logger.getInstance(MqNavigationService.class);
     private static final Comparator<MqEndpoint> ENDPOINT_ORDER = Comparator
             .comparing(MqEndpoint::moduleName)
@@ -221,6 +222,8 @@ public final class MqNavigationService implements PersistentStateComponent<MqNav
         if (scanComplete) {
             CacheState newState = createCacheState(sorted);
             if (newState != null) {
+                // Spring模型参与的快照跨会话重新扫描上下文
+                newState.springModelDependent = dependencies.contains(SpringBeanSource.MODEL_USAGE);
                 cacheState = newState;
             }
         }
@@ -230,7 +233,8 @@ public final class MqNavigationService implements PersistentStateComponent<MqNav
 
     private Optional<List<MqEndpoint>> restoreCachedEndpoints() {
         CacheState state = cacheState;
-        if (state.version != CACHE_VERSION || state.savedAt <= 0 || state.endpoints == null) {
+        if (state.version != CACHE_VERSION || state.savedAt <= 0 || state.endpoints == null
+                || state.springModelDependent) {
             return Optional.empty();
         }
 
@@ -454,6 +458,8 @@ public final class MqNavigationService implements PersistentStateComponent<MqNav
      * Project-level persistent endpoint snapshot state.
      */
     public static final class CacheState {
+        // Spring上下文结果不直接恢复为下一会话的有效绑定
+        public boolean springModelDependent;
         public int version;
         public long savedAt;
         public List<CachedEndpointState> endpoints = new ArrayList<>();

@@ -29,8 +29,10 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        create(IntelliJPlatformType.IntellijIdeaCommunity, "2023.3")
+        // Spring可选适配使用同版本Ultimate公开API编译
+        create(IntelliJPlatformType.IntellijIdeaUltimate, "2023.3")
         bundledPlugin("com.intellij.java")
+        bundledPlugin("com.intellij.spring")
         testFramework(TestFrameworkType.Plugin.Java)
         pluginVerifier()
     }
@@ -73,6 +75,8 @@ intellijPlatform {
     pluginVerification {
         ides {
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2023.3")
+            // Spring可选适配覆盖最低Ultimate版本
+            create(IntelliJPlatformType.IntellijIdeaUltimate, "2023.3")
             create(IntelliJPlatformType.IntellijIdea, "2026.2.1")
             // 兼容性检查覆盖IDEA2026.3
             create(IntelliJPlatformType.IntellijIdea, "2026.3")
@@ -82,6 +86,8 @@ intellijPlatform {
 
 tasks.test {
     useJUnit()
+    // 核心解析测试只启用Java插件，Bean来源通过受控SPI验证
+    systemProperty("idea.load.plugins.id", "com.intellij.java")
 }
 
 tasks.register("buildRelease") {

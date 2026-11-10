@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0] - 2026-11-10
+
+### Added
+
+- Optionally locate Queue/Exchange Java Bean factories through IDEA's public Spring model when injection references cannot be resolved from direct source expressions.
+- Support explicit Bean names and aliases, qualified fields, `@Resource` names, Bean method parameters, and unambiguous type candidates.
+
+### Fixed
+
+- Read the factory's actual returned object for the RabbitMQ name and exchange type instead of an unrelated earlier construction.
+- Keep unresolved or ambiguous Bean definitions dynamic and refresh Bean-dependent snapshots when the model changes or the IDE is reopened.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
