@@ -60,7 +60,7 @@ This is static navigation, not proof that a message is delivered at runtime. The
 - Kafka `sendDefault`, `ProducerRecord`, message headers, `topicPartitions`, and custom wrappers are excluded. RocketMQ orderly, transactional, request/reply, SQL92 property matching, and custom wrappers are excluded.
 - Remote configuration services, environment variables, SpEL, arbitrary method-return flow, and runtime destination transformations cannot be resolved.
 - Headers/custom exchanges and incomplete topology may remain uncertain.
-- A snapshot restored after reopening a project can be stale if files changed while the IDE was closed. **Rescan Endpoints** forces a current scan.
+- Endpoints refresh automatically after opening a project, indexing, and source or module changes. Continuous edits are merged, and rescanning waits for committed documents and completed indexing. **Rescan Endpoints** remains available for an immediate manual refresh.
 - Mutable local routing variables with conditional reassignments are not a full control-flow analysis and can miss or over-report alternatives.
 - Direct-exchange bindings with an explicitly empty routing key are not yet matched correctly.
 

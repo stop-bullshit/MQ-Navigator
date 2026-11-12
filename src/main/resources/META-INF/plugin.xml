@@ -20,6 +20,8 @@
     </extensionPoints>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- 项目启动及源码变更后自动刷新MQ端点和跳转图标 -->
+        <postStartupActivity implementation="cn.luckyh.mqx.navigation.MqAutoRefreshActivity"/>
         <!-- 逻辑变动: 注册三类消息端点的双向导航入口-20260817-1826-01 -->
         <codeInsight.lineMarkerProvider language="JAVA"
                                         implementationClass="cn.luckyh.mqx.navigation.MqLineMarkerProvider"/>

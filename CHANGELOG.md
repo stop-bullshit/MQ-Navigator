@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1] - 2026-11-12
+
+### Fixed
+
+- Automatically rescan MQ endpoints after project startup and indexing, replacing restored snapshots with current source.
+- Merge source and module changes into a background refresh, then update the topology view and cross-file navigation icons after documents are committed.
+
 ## [0.4.0] - 2026-11-10
 
 ### Added

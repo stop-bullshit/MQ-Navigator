@@ -1,5 +1,6 @@
 package cn.luckyh.mqx.navigation;
 
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.components.State;
@@ -44,7 +45,7 @@ import java.util.Set;
 
 @Service(Service.Level.PROJECT)
 @State(name = "MqNavigationEndpointCache", storages = @Storage(StoragePathMacros.CACHE_FILE))
-public final class MqNavigationService implements PersistentStateComponent<MqNavigationService.CacheState> {
+public final class MqNavigationService implements PersistentStateComponent<MqNavigationService.CacheState>, Disposable {
 
     // Bean定义解析升级后重建旧端点缓存
     private static final int CACHE_VERSION = 5;
@@ -77,6 +78,11 @@ public final class MqNavigationService implements PersistentStateComponent<MqNav
 
     public static MqNavigationService getInstance(Project project) {
         return project.getService(MqNavigationService.class);
+    }
+
+    @Override
+    public void dispose() {
+        // 自动刷新监听和队列由平台随服务释放
     }
 
     @Override
